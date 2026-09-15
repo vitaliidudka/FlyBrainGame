@@ -18,7 +18,13 @@
      через (canvas.width/rect.width) — тому CSS-масштабування не ламає
      координати кліку/тапу. */
   #wrap { padding:16px; width:100%; max-width:420px; display:flex; flex-direction:column; align-items:center; }
-  canvas { image-rendering: pixelated; border:2px solid #444; background:#000; touch-action:none; max-width:100%; height:auto; display:block; }
+  /* touch-action:pan-y (не none): на мобільному canvas займає майже весь
+     екран, тому свайп, що починається НА канвасі, мусить далі скролити
+     сторінку (щоб бачити контроли/індикатори нижче) — none блокував це
+     повністю. pan-y лишає вертикальний скрол, все одно блокує pinch-zoom
+     і горизонтальний пан; жодних touch-жестів гра сама не обробляє (лише
+     click), тож нічого не ламається. */
+  canvas { image-rendering: pixelated; border:2px solid #444; background:#000; touch-action:pan-y; max-width:100%; height:auto; display:block; }
   #status { color:#ddd; font-size:14px; margin-top:8px; text-align:center; width:100%; max-width:380px; min-height:36px; overflow:hidden; text-overflow:ellipsis; }
   #controls { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; justify-content:center; }
   button { background:#3c3489; color:#fff; border:none; padding:10px 14px; border-radius:6px; cursor:pointer; font-size:13px; touch-action:manipulation; }
