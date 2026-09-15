@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/fly-pixel-game.html" }
+  ]
+}
