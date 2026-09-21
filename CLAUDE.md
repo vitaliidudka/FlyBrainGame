@@ -8,23 +8,12 @@ Single game file (`fly-pixel-game.html`), no build step.
 - **Live on Vercel**: pushes to `main` auto-deploy (GitHub → Vercel).
   `vercel.json` rewrites `/` to `fly-pixel-game.html`.
 - **GitHub**: `vitaliidudka/FlyBrainGame`, branch `main`.
-- The old ~70-group engine (`snedea/flybrain`-derived) was replaced by
-  this one on 2026-09-21; it survives only in git history (before
-  commit `09aebfe`) and as the automatic fallback in
-  `js/brain-worker-bridge.js` when the connectome fails to load.
-
-## Worktrees
-
-Two git worktrees of the same repo, now at the same commit:
-- `../fly-brain-handoff` — branch `main` (what Vercel deploys).
-- here — branch `full-connectome` (working branch; keep it in sync via
-  `git push origin full-connectome:main`, fast-forward only).
 
 ## Running locally
 
 `file://` does NOT work (browser blocks `fetch('data/connectome.bin.gz')`
 and `new Worker('js/sim-worker.js')`); the game silently falls back to
-the legacy model. Serve over HTTP:
+a small legacy fallback model. Serve over HTTP:
 
 ```bash
 python3 -m http.server 8791   # → http://localhost:8791/fly-pixel-game.html
