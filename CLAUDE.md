@@ -39,12 +39,26 @@ python3 -m http.server 8791   # → http://localhost:8791/fly-pixel-game.html
   `VIS_LC`, `DN_*`, `MN_LEG_*`) and silently do nothing when stimulated
   by index — route through real groups instead (fear goes via
   `GNG_DESC`, vision via `VIS_LO` ray subsets).
+- The fly's decisions must come from real neurons, not game thresholds.
+  `data/neuron_types.json` (built by `scripts/build_neuron_types.py` from
+  FlyWire cell-type annotations) holds real cell types; in full-connectome
+  mode (`realDecisions()`) takeoff = giant-fibre/escape DN spikes, landing
+  = escape DNs quiet + landing DNs, fear = escape-DN readout. Where the
+  data can't decide (VNC reflexes, eating, steering, sleep), the code says
+  so explicitly — don't add new hidden rules that decide for her.
 - One-shot stimulation of specific neurons: `BRAIN.stimulateIndices`
   (same pattern as kcHot/kcWire/kcRoach, fear, vision fan).
 - The UI bars and the "thought" line are read-outs of real drives
   (`brain.fear`, `brain.curiosity`, ...), not controls — don't add
   sliders that write to internal state; interaction should be through
   stimuli (roach, wire, food, coffee, shake, click).
+- Body physiology (hunger, thirst, dust, sleep debt, death counters)
+  lives in `stepBody()`, which both the live `loop()` and the
+  away/offline catch-up (`applyAwayTime()`) call. Put new body rates
+  there, not directly in `loop()`, or they won't advance while away.
+- The fly persists in `localStorage` (`flyBrain.save.v1`); a hidden tab
+  pauses the game. For a fresh test run, clear that key first, and close
+  other tabs of the game — they share the save.
 - When testing, reset state between scenarios (mode, zone, position,
   `lastSwitch`, `stateUntil`, `brain.groomAccum`); the AI logic
   overrides hand-forced state otherwise.

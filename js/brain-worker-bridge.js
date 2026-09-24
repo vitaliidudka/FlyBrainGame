@@ -116,7 +116,7 @@
 				if (subtitle) {
 					subtitle.textContent = 'Parsing connectome...';
 				}
-				worker = new Worker('js/sim-worker.js');
+				worker = new Worker('js/sim-worker.js?v=2');
 				worker.onmessage = handleWorkerMessage;
 				worker.onerror = handleWorkerError;
 				worker.postMessage({type: 'init', buffer: buffer}, [buffer]);
@@ -184,6 +184,9 @@
 			latestFireState = e.data.fireState;
 			BRAIN.latestFireState = e.data.fireState;
 			BRAIN.workerFiredNeurons = e.data.firedNeurons || 0;
+			// Every worker tick, so game-side decoders count each spike
+			// exactly once (a 500ms brain tick spans ~5 worker ticks).
+			if (BRAIN.onWorkerTick) BRAIN.onWorkerTick(e.data.fireState);
 			if (pendingGroupSpikes && e.data.groupSpikeCounts) {
 				for (var g = 0; g < groupCount; g++) {
 					pendingGroupSpikes[g] += e.data.groupSpikeCounts[g] || 0;
@@ -199,7 +202,7 @@
 				var firedPct = Math.round((e.data.firedNeurons || 0) / e.data.totalNeurons * 100);
 				var activePct = Math.round(e.data.activeNeurons / e.data.totalNeurons * 100);
 				statsSubtitle.textContent = neuronCount.toLocaleString() + ' neurons (' +
-					firedPct + '% firing, ' + activePct + '% active groups, ' +
+					firedPct + '% firing, ' + activePct + '% in active groups, ' +
 					e.data.avgTickMs.toFixed(1) + 'ms/tick) \u2014 FlyWire FAFB v783';
 			}
 			break;
@@ -291,26 +294,10 @@
 		var head = readPS('MN_HEAD');
 		var dnStartle = readPS('DN_STARTLE');
 		var noci = readPS('NOCI');
-		// [FULL-CONNECTOME, 2026-09-17] "Зробити страх реальним": усі інші
-		// терми тут (dFear/mbAv/lhAv/dnStartle/noci) читають групи з 0
-		// живих нейронів у цій 63-груповій таксономії -- flightIntent досі
-		// був 100% synthetic (game-рівня drive), жодного реального нейрона.
-		// fearGngDescActivity -- скільки з нашої 100-нейронної підмножини
-		// GNG_DESC (fly-pixel-game.html: gngDescFearIndices,
-		// stimulateFearGngDesc) РЕАЛЬНО спрацювало щойно, за фактичною
-		// LIF-динамікою (поріг/leak/рефрактерність), не формулою. Знайдено
-		// дослідженням реальних зв'язків connectome.bin.gz: GNG_DESC --
-		// ЄДИНИЙ реальний, непорожній, valence-нейтральний шлях від обох
-		// реальних "небезпечних" входів (GUS_GRN_BITTER напряму,
-		// OLF_ORN_DANGER за 2 кроки) -- шлях через MB_KC виявився глухим
-		// кутом для аверсії (усі реальні виходи MB_KC йдуть лише в
-		// апетитивні MB_MBON_APP/MB_DAN_REW, бо аверсивних варіантів у
-		// даних просто немає).
-		var fearGngDescActivity = BRAIN._fearSubsetActivity || 0;
 
 		// Compute motor intent weights (unnormalized, then used proportionally)
 		var walkIntent = (cxPfn + cxFc + cxEpg) * 0.3 + (mbApp + lhApp) * 0.5 + (desc + vcpg) * 0.2;
-		var flightIntent = dFear * 2.0 + (mbAv + lhAv) * 0.8 + dnStartle * 1.5 + noci * 1.0 + fearGngDescActivity * 1.2;
+		var flightIntent = dFear * 2.0 + (mbAv + lhAv) * 0.8 + dnStartle * 1.5 + noci * 1.0;
 		var groomIntent = dGroom * 1.5 + sezGroom * 1.0;
 		var feedIntent = sezFeed * 1.0 + prob * 0.5;
 		var descProxy = Math.max(
@@ -449,12 +436,11 @@
 	/* ---- translate BRAIN.stimulate + BRAIN.drives to worker stimulation ---- */
 
 	function collectOneShotSegments() {
-		var segs = [];
-		if (BRAIN.stimulate.nociception) {
-			segs.push({name: 'NOCI', intensity: STIM_INTENSITY * 5});
-			BRAIN.stimulate.nociception = false;
-		}
-		return segs;
+		// NOCI has 0 real neurons in this dataset, so the pain flag is only
+		// cleared here; shake/wire pain reaches real neurons via GNG_DESC
+		// (fly-pixel-game.html stimulateFearGngDesc).
+		BRAIN.stimulate.nociception = false;
+		return [];
 	}
 
 	function collectStimulationSegments() {
@@ -492,10 +478,14 @@
 		if (BRAIN.stimulate.foodNearby) {
 			segs.push({name: 'OLF_ORN_FOOD', intensity: STIM_INTENSITY});
 		}
+		// Body state scales taste receptor sensitivity (hunger -> sweet GRNs,
+		// thirst -> water GRNs); set by fly-pixel-game.html runBrainTick.
+		var gs = BRAIN.stimulate.sweetGain || 1;
+		var gw = BRAIN.stimulate.waterGain || 1;
 		if (BRAIN.stimulate.foodContact) {
 			// Яблуко: солодке + легка водяниста нотка (~85% води в реальному яблуці).
-			segs.push({name: 'GUS_GRN_SWEET', intensity: STIM_INTENSITY});
-			segs.push({name: 'GUS_GRN_WATER', intensity: STIM_INTENSITY * 0.3});
+			segs.push({name: 'GUS_GRN_SWEET', intensity: STIM_INTENSITY * gs});
+			segs.push({name: 'GUS_GRN_WATER', intensity: STIM_INTENSITY * 0.3 * gw});
 		}
 		// [FULL-CONNECTOME game addition — NOT in upstream collectStimulationSegments()]
 		// waterContact (кавова пляма) і meatContact (салямі) — цей самий
@@ -507,12 +497,12 @@
 		// worker його не читає (той самий клас багів, що mug/wire/roach
 		// до Фази 2, див. HANDOFF.md).
 		if (BRAIN.stimulate.waterContact) {
-			segs.push({name: 'GUS_GRN_WATER', intensity: STIM_INTENSITY});
+			segs.push({name: 'GUS_GRN_WATER', intensity: STIM_INTENSITY * gw});
 			segs.push({name: 'GUS_GRN_BITTER', intensity: STIM_INTENSITY * 0.4});
-			segs.push({name: 'GUS_GRN_SWEET', intensity: STIM_INTENSITY * 0.25});
+			segs.push({name: 'GUS_GRN_SWEET', intensity: STIM_INTENSITY * 0.25 * gs});
 		}
 		if (BRAIN.stimulate.meatContact) {
-			segs.push({name: 'GUS_GRN_WATER', intensity: STIM_INTENSITY * 0.4});
+			segs.push({name: 'GUS_GRN_WATER', intensity: STIM_INTENSITY * 0.4 * gw});
 		}
 		if (BRAIN.stimulate.dangerOdor) {
 			segs.push({name: 'OLF_ORN_DANGER', intensity: STIM_INTENSITY});
@@ -522,7 +512,6 @@
 		}
 		if (BRAIN.stimulate.lightLevel > 0.2) {
 			segs.push({name: 'VIS_R1R6', intensity: STIM_INTENSITY * BRAIN.stimulate.lightLevel});
-			segs.push({name: 'VIS_R7R8', intensity: STIM_INTENSITY * BRAIN.stimulate.lightLevel * 0.7});
 		}
 		if (BRAIN.stimulate.temperature > 0.65) {
 			var warmIntensity = (BRAIN.stimulate.temperature - 0.5) * 2;
@@ -530,9 +519,6 @@
 		} else if (BRAIN.stimulate.temperature < 0.35) {
 			var coolIntensity = (0.5 - BRAIN.stimulate.temperature) * 2;
 			segs.push({name: 'THERMO_COOL', intensity: STIM_INTENSITY * coolIntensity});
-		}
-		if (BRAIN._isMoving) {
-			segs.push({name: 'MECH_CHORD', intensity: STIM_INTENSITY});
 		}
 		// [FULL-CONNECTOME fix, 2026-09-17] Was a flat on/off pulse gated on
 		// lightLevel>0.1 -- ignored fly-pixel-game.html's ALREADY-COMPUTED
@@ -686,7 +672,8 @@
 
 	function startWorker() {
 		if (!workerReady || !worker) return;
-		worker.postMessage({type: 'reset'});
+		// No 'reset': resume from the paused membrane state so a hidden tab
+		// continues seamlessly.
 		if (pendingGroupSpikes) pendingGroupSpikes.fill(0);
 		pendingWorkerTicks = 0;
 		pendingDriveFrames = 0;

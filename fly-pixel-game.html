@@ -27,6 +27,10 @@
   canvas { image-rendering: pixelated; border:2px solid #444; background:#000; touch-action:pan-y; max-width:100%; height:auto; display:block; }
   #status { color:#ddd; font-size:14px; margin-top:8px; text-align:center; width:100%; max-width:380px; min-height:36px; overflow:hidden; text-overflow:ellipsis; }
   #thought { color:#f0d878; font-size:15px; font-weight:bold; margin-top:2px; text-align:center; width:100%; max-width:380px; min-height:20px; }
+  #awayNote { color:#cfe6ff; background:#23303d; border:1px solid #3d5570; border-radius:6px; padding:6px 10px; font-size:13px; text-align:center; width:100%; max-width:380px; box-sizing:border-box; margin:4px 0; }
+  #deathPanel { background:#3a1f22; border:1px solid #7a3a40; border-radius:6px; padding:10px; text-align:center; width:100%; max-width:380px; box-sizing:border-box; margin:6px 0; }
+  #deathText { color:#f3c9cc; font-size:14px; margin:0 0 8px; }
+  [hidden] { display:none !important; }
   /* [FULL-CONNECTOME] стилі для елементів, куди пише js/brain-worker-bridge.js — див. HANDOFF.md */
   #scaleIndicator { color:#8fd9ff; font-size:11px; text-align:center; width:100%; max-width:380px; margin-top:6px; }
   #connectomeSubtitle { color:#999; font-size:11px; text-align:center; width:100%; max-width:380px; margin-top:2px; min-height:14px; }
@@ -79,6 +83,11 @@
        показує сирі назви активних груп нейронів) — щоб було видно намір
        мухи одним поглядом, без потреби читати нейронні групи. -->
   <p id="thought">Гуляє</p>
+  <p id="awayNote" hidden></p>
+  <div id="deathPanel" hidden>
+    <p id="deathText"></p>
+    <button id="reviveBtn">Воскресити</button>
+  </div>
   <!-- [FULL-CONNECTOME] жива 3D карта активації повного конектома — наша
        фіча, не з upstream flybrain. Дивись <script type="module"> в кінці
        файлу (brain3d.js-еквівалент, інлайн) і HANDOFF.md. -->
@@ -167,6 +176,10 @@ const fearFillEl = document.getElementById('fearFill');
 const fearLabelEl = document.getElementById('fearLabel');
 const curiosityFillEl = document.getElementById('curiosityFill');
 const curiosityLabelEl = document.getElementById('curiosityLabel');
+const awayNoteEl = document.getElementById('awayNote');
+const deathPanelEl = document.getElementById('deathPanel');
+const deathTextEl = document.getElementById('deathText');
+const reviveBtn = document.getElementById('reviveBtn');
 const thirstFillEl = document.getElementById('thirstFill');
 const thirstLabelEl = document.getElementById('thirstLabel');
 window.SHOW_DEBUG = false;
@@ -338,6 +351,10 @@ function start(){
   clearPoopsBtn.addEventListener('click', () => { poops = []; foods = []; roach = null; roachSpawnAt = null; });
   dropFoodBtn.addEventListener('click', dropFood);
   nightBtn.addEventListener('click', () => { isNight = !isNight; nightBtn.textContent = isNight ? 'День' : 'Ніч'; });
+  reviveBtn.addEventListener('click', reviveFly);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('pagehide', saveGame);
+  loadGame();
   requestAnimationFrame(loop);
 }
 
@@ -1168,7 +1185,11 @@ BRAIN.updateDrives = function () {
 		// відновлює втому ефективніше за звичайне сидіння без руху —
 		// SLEEP_FATIGUE_RECOVERY_MULT.
 		var sleepMult = BRAIN._isSleeping ? SLEEP_FATIGUE_RECOVERY_MULT : 1;
-		d.fatigue -= FATIGUE_RECOVERY_RATE_BASE * dopamineMult * sleepMult;
+		// At night only real sleep relieves sleep pressure; sitting awake
+		// (groom/idle/eating) barely does. Otherwise a 5s groom erased ~50s of
+		// night walking and fatigue never reached SLEEP_FATIGUE_NIGHT.
+		var nightAwakeMult = (isNight && !BRAIN._isSleeping) ? NIGHT_AWAKE_RECOVERY_MULT : 1;
+		d.fatigue -= FATIGUE_RECOVERY_RATE_BASE * dopamineMult * sleepMult * nightAwakeMult;
 	}
 	// Клемп 0-1: раніше не був потрібен (d.fatigue лише порівнювався з
 	// restFatigue-порогом, однобічно) — тепер від нього НАПРЯМУ залежить
@@ -1640,7 +1661,8 @@ const SLEEP_FATIGUE_NIGHT = 0.35;
 const SIESTA_FATIGUE_DAY = 0.55;
 const SLEEP_BASE_MS = 4000;
 const SLEEP_FATIGUE_SCALE_MS = 6000; // тривалість росте з поточною втомою
-const SLEEP_DEBT_BONUS_MS = 8000;    // rebound: росте ще й з боргом сну — компенсаторний сон довший
+const SLEEP_DEBT_BONUS_MS = 8000;
+const NIGHT_SLEEP_BONUS_MS = 8000;    // нічні епізоди сну довші за денну сієсту — вночі муха спить більшу частину часу    // rebound: росте ще й з боргом сну — компенсаторний сон довший
 // "Складніше розбудити" — клік/струс під час сну дають лише частку
 // звичайного переляку (SLEEP_AROUSAL_DAMPING применшує ВХІДНИЙ стимул).
 const SLEEP_AROUSAL_DAMPING = 0.3;
@@ -1652,6 +1674,11 @@ const SLEEP_WAKE_FEAR_THRESHOLD = 0.1;
 // Сон відновлює втому ЕФЕКТИВНІШЕ за звичайний відпочинок (реальний сон
 // глибший за просте сидіння без руху).
 const SLEEP_FATIGUE_RECOVERY_MULT = 1.8;
+const NIGHT_AWAKE_RECOVERY_MULT = 0.1;
+// Нічний сон дрозофіли — це циркадний годинник + гомеостатичний тиск сну
+// (наш sleepDebt), а не лише фізична втома від руху: їжа й чищення лапок
+// постійно скидають fatigue, і без цього порогу муха вночі не засинала.
+const SLEEP_DEBT_NIGHT_TRIGGER = 8;
 // Хронічний борг сну погіршує навчання (реальна дрозофіла: недосип
 // "порушує пам'ять") — масштабує інтенсивність KC-стимуляції для
 // mug/wire/roach нижче (sleepDeprivationMult()). Скорочення життя з
@@ -1873,11 +1900,18 @@ function runBrainTick(t){
 	const aheadX = pos.x + Math.cos(headingAngle)*VISION_OPTIC_FLOW_PROBE;
 	const aheadY = pos.y + Math.sin(headingAngle)*VISION_OPTIC_FLOW_PROBE;
 	BRAIN.stimulate.opticFlow = Math.abs(brightnessAt(aheadX,aheadY) - brightnessAt(pos.x,pos.y));
-	// [FULL-CONNECTOME] Реальна активність нашої fear-підмножини GNG_DESC
-	// (readAndResetGngDescFear/stimulateFearGngDesc) — читається worker-
-	// мостом у synthesizeMotorOutputs() як додатковий, реальний внесок у
-	// flightIntent (раніше йшов ЛИШЕ у walkIntent).
-	BRAIN._fearSubsetActivity = readAndResetGngDescFear();
+	// [FULL-CONNECTOME, 2026-09-24] Смак під час дотику до їжі (стан atfood) —
+	// увесь час "роздумування" йде в справжні смакові рецептори. Стан тіла
+	// змінює їхню чутливість, як у реальної мухи: голод підсилює солодкі GRN,
+	// спрага — водяні.
+	if(realDecisions()){
+		const contact = (mode==='ground' && state==='atfood' && atFoodTarget) ? atFoodTarget.type : null;
+		BRAIN.stimulate.foodContact = contact==='apple';
+		BRAIN.stimulate.waterContact = contact==='coffee';
+		BRAIN.stimulate.meatContact = contact==='salami';
+		BRAIN.stimulate.sweetGain = TASTE_GAIN_BASE + brain.hunger*SWEET_GAIN_PER_HUNGER;
+		BRAIN.stimulate.waterGain = TASTE_GAIN_BASE + brain.thirst*WATER_GAIN_PER_THIRST;
+	}
 
 	BRAIN.update();
 	// [FULL-CONNECTOME] worker-driven update() ніколи не наповнює
@@ -1952,69 +1986,92 @@ function runBrainTick(t){
 	// вирішує. Сильний accumFlight (реальний вихід DN_FLIGHT/крила — тікає
 	// від страху/болю/спеки) = втеча; спокійна висока цікавість без їжі
 	// поруч і без утоми = дослідницький переліт в іншу зону столу.
-	if(mode==='ground'){
-		// ВИПРАВЛЕНО (знайдено за скаргою "не їсть, коли голодна"): accumFlight
-		// може перетнути поріг НЕ лише від справжнього переляку (клік/струс —
-		// BRAIN.drives.fear), а й від зорового VIS_LC (зіткнення/стіна поруч,
-		// див. розділ "Зір" вище) — суто фонового сигналу без жодного реального
-		// переляку. Живою симуляцією відтворено: муха йде до їжі (foodNearby),
-		// поруч випадково спрацьовує VIS_LC (fear=0!), злітає й летить ГЕТЬ —
-		// їжа лишається поза радіусом нюху, і "рішення поїсти" просто ніколи
-		// більше не настає. Справжній переляк (fear>0.02) і далі скасовує їжу
-		// беззастережно (як має бути — реальна загроза важливіша за голод) —
-		// придушується лише "втеча" без жодної реальної причини страху САМЕ
-		// під час активного переслідування конкретної їжі.
-		const hasRealFear = BRAIN.drives.fear > 0.02;
-		const escapeUrge = brain.flight > BEHAVIOR_THRESHOLDS.fly && (hasRealFear || !chaseFood);
-		// поріг 0.55, не 0.75: за типової динаміки DRIVE_CURIOSITY (повільний
-		// дрейф ±0.03/такт у BRAIN.updateDrives) стеля рідко піднімається вище
-		// ~0.6, тож 0.75 практично недосяжний і дослідницький політ ніколи б
-		// не траплявся — перевірено прогоном ~100с симуляції.
-		// ВИПРАВЛЕНО (fatigue<0.4, потім <0.6 → <0.8): DRIVE_FATIGUE
-		// природно ВРІВНОВАЖУЄТЬСЯ біля власного порогу гри "йти відпочити"
-		// (BEHAVIOR_THRESHOLDS.restFatigue=0.7) — цикл ходьба/відпочинок
-		// відпочиває лише щойно fatigue перетне 0.7, трохи знижує його й
-		// одразу знову веде вгору до того самого порогу. Тобто СТАЦІОНАРНЕ
-		// значення fatigue в довгій грі — завжди БЛИЗЬКО ДО 0.7, а не якесь
-		// низьке "typical". Живою симуляцією підтверджено: навіть після
-		// підняття порогу до 0.6 muha застрягала (fatigue плато ~0.67-0.70,
-		// 9792 із ~9850 придатних семплів все одно блоковані втомою). Ціль
-		// gate — "не буквально виснажена", не "мало втомлена": 0.8 дає
-		// реальний простір під час звичайного стаціонарного режиму, і досі
-		// виключає крайній хвіст (fatigue→1.0 перед примусовим відпочинком).
-		const exploreUrge = !escapeUrge && brain.curiosity > 0.55 && !brain.foodNearby
-			&& brain.fatigue < 0.8 && t > nextExploreCheck;
-		if(escapeUrge || exploreUrge){
-			takeoff(escapeUrge ? 0.9 : 0.6, exploreUrge ? 'explore' : 'escape');
-			// 15-20с, не 4с: DRIVE_CURIOSITY має "інерцію" (повільний дрейф,
-			// не миттєво скидається після зльоту), тож короткий кулдаун
-			// призводив до зльоту що ~6с — муха виглядала неспокійною,
-			// а не природно-дослідницькою. Перевірено прогоном ~190с.
-			if(exploreUrge) nextExploreCheck = t + 15000 + Math.random()*5000;
+	if(realDecisions()){
+		// [FULL-CONNECTOME, 2026-09-24] Рішення читаються зі справжніх клітин
+		// (див. REAL): жодних порогів на ігрові числа. Зліт — по гігантському
+		// волокну в BRAIN.onWorkerTick. Тут: "страх" як зчитування команд
+		// утечі і рішення сісти.
+		const sp = readRealSpikes();
+		lastRealSpikes = sp;
+		realFear = Math.min(1, Math.max(realFear*REAL_FEAR_DECAY, sp.escape*REAL_FEAR_PER_SPIKE));
+		BRAIN.drives.fear = realFear;
+		brain.fear = realFear;
+		if(mode==='air'){
+			ticksAirborne++;
+			// Сідає, коли в мозку стихли команди утечі і нейрони посадки
+			// DNp07/DNp10 кажуть сісти. Тривалість польоту — рішення мережі; втома
+			// лише фізично зменшує підйомну силу (moveAir). DNp02/DNp06 сюди не
+			// входять: у грі вони насичені вже в спокої (~4 спайки/такт).
+			realCalmTicks = sp.escape <= REAL_CALM_MAX_DRIVE ? realCalmTicks + 1 : 0;
+			if(realCalmTicks >= REAL_CALM_TICKS_TO_LAND && sp.landing >= LANDING_SPIKES){
+				attemptLand();
+			}
 		}
-	} else if(mode==='air'){
-		ticksAirborne++;
-		// заспокоїлась — шукає, де сісти. Поріг приземлення ВІДНОСНИЙ до
-		// peakFear (пік переляку цього конкретного зльоту, див. takeoff()),
-		// а не спільна стеля 0-1: сильніший стимул (вищий peakFear) сам собою
-		// вимагає довшого лінійного спаду DRIVE_FEAR до 15% від СВОГО піку.
-		// Дебаунс (CALM_STREAK_NEEDED тактів поспіль) замість миттєвої
-		// перевірки: accumFlight — це миттєвий сплеск моторних нейронів крил
-		// (motorcontrol() дренує їх одразу після зчитування), тож сам по собі
-		// він згасає до 0 вже на наступному такті — дебаунс вимагає, щоб
-		// спокій був СТІЙКИМ кілька тактів поспіль, а не однією випадковою
-		// миттю затишшя.
-		//
-		// minAirTicks (див. takeoff()) — ОКРЕМА гарантія для дослідницьких
-		// польотів: коли peakFear низький (немає реального переляку), поріг
-		// peakFear*15% тривіально виконується вже на 1-му такті (ambient
-		// fear і так майже 0), і без minAirTicks дослідницький політ сідав
-		// би за ~2с дебаунсу, не встигаючи нікуди реально долетіти (саме це
-		// й виглядало як "злітає на кілька сантиметрів і сідає назад").
-		const calmNow = brain.flight < 4 && brain.fear < peakFear*0.15 && brain.fatigue < CALM_MAX_FATIGUE;
-		calmStreak = calmNow ? calmStreak + 1 : 0;
-		if(calmStreak >= CALM_STREAK_NEEDED && ticksAirborne >= minAirTicks){
-			attemptLand();
+	} else {
+		if(mode==='ground'){
+			// ВИПРАВЛЕНО (знайдено за скаргою "не їсть, коли голодна"): accumFlight
+			// може перетнути поріг НЕ лише від справжнього переляку (клік/струс —
+			// BRAIN.drives.fear), а й від зорового VIS_LC (зіткнення/стіна поруч,
+			// див. розділ "Зір" вище) — суто фонового сигналу без жодного реального
+			// переляку. Живою симуляцією відтворено: муха йде до їжі (foodNearby),
+			// поруч випадково спрацьовує VIS_LC (fear=0!), злітає й летить ГЕТЬ —
+			// їжа лишається поза радіусом нюху, і "рішення поїсти" просто ніколи
+			// більше не настає. Справжній переляк (fear>0.02) і далі скасовує їжу
+			// беззастережно (як має бути — реальна загроза важливіша за голод) —
+			// придушується лише "втеча" без жодної реальної причини страху САМЕ
+			// під час активного переслідування конкретної їжі.
+			const hasRealFear = BRAIN.drives.fear > 0.02;
+			const escapeUrge = brain.flight > BEHAVIOR_THRESHOLDS.fly && (hasRealFear || !chaseFood);
+			// поріг 0.55, не 0.75: за типової динаміки DRIVE_CURIOSITY (повільний
+			// дрейф ±0.03/такт у BRAIN.updateDrives) стеля рідко піднімається вище
+			// ~0.6, тож 0.75 практично недосяжний і дослідницький політ ніколи б
+			// не траплявся — перевірено прогоном ~100с симуляції.
+			// ВИПРАВЛЕНО (fatigue<0.4, потім <0.6 → <0.8): DRIVE_FATIGUE
+			// природно ВРІВНОВАЖУЄТЬСЯ біля власного порогу гри "йти відпочити"
+			// (BEHAVIOR_THRESHOLDS.restFatigue=0.7) — цикл ходьба/відпочинок
+			// відпочиває лише щойно fatigue перетне 0.7, трохи знижує його й
+			// одразу знову веде вгору до того самого порогу. Тобто СТАЦІОНАРНЕ
+			// значення fatigue в довгій грі — завжди БЛИЗЬКО ДО 0.7, а не якесь
+			// низьке "typical". Живою симуляцією підтверджено: навіть після
+			// підняття порогу до 0.6 muha застрягала (fatigue плато ~0.67-0.70,
+			// 9792 із ~9850 придатних семплів все одно блоковані втомою). Ціль
+			// gate — "не буквально виснажена", не "мало втомлена": 0.8 дає
+			// реальний простір під час звичайного стаціонарного режиму, і досі
+			// виключає крайній хвіст (fatigue→1.0 перед примусовим відпочинком).
+			const exploreUrge = !escapeUrge && brain.curiosity > 0.55 && !brain.foodNearby
+				&& brain.fatigue < 0.8 && t > nextExploreCheck;
+			if(escapeUrge || exploreUrge){
+				takeoff(escapeUrge ? 0.9 : 0.6, exploreUrge ? 'explore' : 'escape');
+				// 15-20с, не 4с: DRIVE_CURIOSITY має "інерцію" (повільний дрейф,
+				// не миттєво скидається після зльоту), тож короткий кулдаун
+				// призводив до зльоту що ~6с — муха виглядала неспокійною,
+				// а не природно-дослідницькою. Перевірено прогоном ~190с.
+				if(exploreUrge) nextExploreCheck = t + 15000 + Math.random()*5000;
+			}
+		} else if(mode==='air'){
+			ticksAirborne++;
+			// заспокоїлась — шукає, де сісти. Поріг приземлення ВІДНОСНИЙ до
+			// peakFear (пік переляку цього конкретного зльоту, див. takeoff()),
+			// а не спільна стеля 0-1: сильніший стимул (вищий peakFear) сам собою
+			// вимагає довшого лінійного спаду DRIVE_FEAR до 15% від СВОГО піку.
+			// Дебаунс (CALM_STREAK_NEEDED тактів поспіль) замість миттєвої
+			// перевірки: accumFlight — це миттєвий сплеск моторних нейронів крил
+			// (motorcontrol() дренує їх одразу після зчитування), тож сам по собі
+			// він згасає до 0 вже на наступному такті — дебаунс вимагає, щоб
+			// спокій був СТІЙКИМ кілька тактів поспіль, а не однією випадковою
+			// миттю затишшя.
+			//
+			// minAirTicks (див. takeoff()) — ОКРЕМА гарантія для дослідницьких
+			// польотів: коли peakFear низький (немає реального переляку), поріг
+			// peakFear*15% тривіально виконується вже на 1-му такті (ambient
+			// fear і так майже 0), і без minAirTicks дослідницький політ сідав
+			// би за ~2с дебаунсу, не встигаючи нікуди реально долетіти (саме це
+			// й виглядало як "злітає на кілька сантиметрів і сідає назад").
+			const calmNow = brain.flight < 4 && brain.fear < peakFear*0.15 && brain.fatigue < CALM_MAX_FATIGUE;
+			calmStreak = calmNow ? calmStreak + 1 : 0;
+			if(calmStreak >= CALM_STREAK_NEEDED && ticksAirborne >= minAirTicks){
+				attemptLand();
+			}
 		}
 	}
 }
@@ -2623,16 +2680,24 @@ let roachCloseStreak = 0;
 function senseRoach(){
   roachPunishedThisTick = false;
   roachCsPresentThisTick = false;
-  if(!roach || mode!=='ground'){ roachCloseStreak = 0; return; }
+  if(!roach || mode!=='ground'){ roachCloseStreak = 0; roachPrevDist = null; return; }
   if(BRAIN.workerReady) ensureKCSubsets();
   const d = Math.hypot(roach.x-pos.x, roach.y-pos.y);
+  // Тінь від таргана, що НАБЛИЖАЄТЬСЯ: LC4/LPLC2 реагують на розширення
+  // зображення, а не на саму близькість — сила ~ відносна швидкість
+  // наближення за такт.
+  if(realDecisions() && roachPrevDist !== null && d < ROACH_SEE_DIST){
+    const expansion = (roachPrevDist - d) / Math.max(d, 5);
+    if(expansion > 0) stimulateLooming(Math.min(1, expansion*ROACH_LOOM_GAIN));
+  }
+  roachPrevDist = d;
   roachCsPresentThisTick = d < ROACH_CLOSE_DIST; // TOUCH-зона теж < ROACH_CLOSE_DIST
   if(d < ROACH_TOUCH_DIST){
     BRAIN.dendriteAccumulate('VIS_LC'); // легасі шлях, для main/fallback — і той самий спільний нейрон, що стіна/клік, ЛИШЕ там
     BRAIN.dendriteAccumulate('DN_STARTLE');
     BRAIN.stimulate.touch = true;
     BRAIN.stimulate.touchLocation = 'thorax';
-    stimulateFearGngDesc(2.5); // [FULL-CONNECTOME] реальний GNG_DESC-внесок у страх, див. коментар біля stimulateFearGngDesc
+    if(realDecisions()){ stimulateBodyJolt(ROACH_TOUCH_JOLT); bodyReflexTakeoff(); }
     roachCloseStreak = VISION_LOOM_STREAK_NEEDED; // вже впритул — дебаунс не потрібен
     roachPunishedThisTick = true;
     // [FULL-CONNECTOME] на відміну від VIS_LC вище (спільний нейрон
@@ -2684,26 +2749,10 @@ function senseRoach(){
 // неперетинні підмножини РЕАЛЬНИХ 5177 MB_KC-нейронів (справжній
 // "sparse odor code" датасету FlyWire) — по одній на подразник — які
 // стимулюємо напряму через BRAIN.stimulateIndices() (див. новий хук у
-// js/brain-worker-bridge.js). "Чи спрацював CS" читаємо з РЕАЛЬНОГО
-// per-neuron BRAIN.latestFireState (не з threshold-евристики) — це
-// фактичні LIF-спайки цих конкретних клітин.
+// js/brain-worker-bridge.js). Вага асоціації — ігрова модель, див.
+// коментар біля applyMBPlasticityWorker().
 const KC_SUBSET_SIZE = 60; // довільний розмір "своєї" підмножини на подразник, з запасом від перетину
 let kcHotIndices = null, kcWireIndices = null, kcRoachIndices = null;
-// [FULL-CONNECTOME] BRAIN.latestFireState — це МИТТЄВИЙ знімок останнього
-// worker-тіку (~10Гц/100мс), а applyMBPlasticity() перевіряє його лише РАЗ
-// на BRAIN_TICK_MS=500мс (кожен 5-й тік) — перевірено живим прогоном:
-// спорадичний зовнішній опитувач (незалежний setInterval) регулярно ловив
-// hotFired=true, а сама applyMBPlasticityWorker() — жодного разу за 44
-// такти (24с) поспіль впритул до чашки. Одноразовий 100мс-грануляційний
-// снепшот, перевірений раз на 500мс, систематично пропускає короткі
-// спрацювання (aliasing між двома детермінованими періодами). Замість
-// цього — "липкий" акумулятор: опитуємо кожні KC_POLL_MS (частіше за
-// внутрішній тік воркера), OR-имо результат, а applyMBPlasticityWorker()
-// читає-і-скидає його раз на такт мозку — жодне спрацювання між тактами
-// вже не губиться.
-const KC_POLL_MS = 80;
-let kcHotFiredSinceCheck = false, kcWireFiredSinceCheck = false, kcRoachFiredSinceCheck = false;
-let kcPollHandle = null;
 function ensureKCSubsets(){
 	if(kcHotIndices || !BRAIN.workerReady) return;
 	const ids = BRAIN.workerGroupIdArr, names = BRAIN.workerGroupIdToName;
@@ -2717,113 +2766,112 @@ function ensureKCSubsets(){
 	kcHotIndices = new Uint32Array(all.slice(0, KC_SUBSET_SIZE));
 	kcWireIndices = new Uint32Array(all.slice(KC_SUBSET_SIZE, KC_SUBSET_SIZE*2));
 	kcRoachIndices = new Uint32Array(all.slice(KC_SUBSET_SIZE*2, KC_SUBSET_SIZE*3));
-	kcPollHandle = setInterval(function(){
-		if(kcSubsetFiredNow(kcHotIndices)) kcHotFiredSinceCheck = true;
-		if(kcSubsetFiredNow(kcWireIndices)) kcWireFiredSinceCheck = true;
-		if(kcSubsetFiredNow(kcRoachIndices)) kcRoachFiredSinceCheck = true;
-	}, KC_POLL_MS);
 }
 
-// [FULL-CONNECTOME, 2026-09-17] "Зробити страх реальним" — за прямою
-// вказівкою користувача, дослідив РЕАЛЬНІ зв'язки в connectome.bin.gz
-// (не нашу таблицю ваг) від обох реальних "небезпечних" входів
-// (OLF_ORN_DANGER, GUS_GRN_BITTER). Увесь офіційний punishment-ланцюжок
-// (NOCI/VIS_LC/MB_DAN_PUN/MB_MBON_AV/DN_STARTLE) має 0 живих нейронів —
-// підтверджено навіть на 2 кроки вглиб. Найсильніший реальний шлях
-// (OLF_ORN_DANGER → ... → MB_KC, 2450 зв'язків) виявився ГЛУХИМ КУТОМ
-// для аверсії: усі реальні виходи MB_KC йдуть ЛИШЕ в MB_MBON_APP/
-// MB_DAN_REW (апетитивні/нагорода — той самий шлях, що й солодкий смак!),
-// бо аверсивних MBON/DAN просто не існує в цих даних. ЄДИНИЙ реальний,
-// непорожній, valence-нейтральний шлях від ОБОХ небезпечних входів —
-// GNG_DESC (головний низхідний вихід мозку): напряму від GUS_GRN_BITTER
-// (67 зв'язків, 1 крок) і від OLF_ORN_DANGER (166 зв'язків, 2 кроки).
-// Анатомічно осмислено: GNG_DESC — це буквально "як мозок каже тілу
-// рухатись", байдуже до емоційного забарвлення сигналу.
-let gngDescFearIndices = null;
-const GNG_DESC_FEAR_SUBSET_SIZE = 100; // з 3581 живих — свій "різкий" зріз, не всю групу
-// [FULL-CONNECTOME] Той самий "липкий" акумулятор, що й kcHotFiredSinceCheck
-// вище (та сама причина: 100мс-грануляційний BRAIN.latestFireState,
-// перевірений раз на 500мс, губить короткі спрацювання) — тут МАКСИМУМ
-// кількості спрацьованих нейронів підмножини за вікно, не просто bool,
-// бо потрібна ГРАДУЙОВАНА сила для flightIntent (synthesizeMotorOutputs),
-// не "було/не було".
-const GNG_DESC_FEAR_POLL_MS = 60;
-let gngDescFearMaxCountSinceCheck = 0;
-let gngDescFearPollHandle = null;
-function ensureGngDescFearIndices(){
-	if(gngDescFearIndices || !BRAIN.workerReady) return;
-	const ids = BRAIN.workerGroupIdArr, names = BRAIN.workerGroupIdToName;
-	if(!ids || !names) return;
-	const gngId = names.indexOf('GNG_DESC');
-	if(gngId < 0) return;
-	const all = [];
-	for(let i=0; i<ids.length; i++){ if(ids[i]===gngId) all.push(i); }
-	if(all.length < GNG_DESC_FEAR_SUBSET_SIZE) return;
-	// фіксований зріз з КІНЦЯ діапазону (не з початку, як kcHot/kcWire/
-	// kcRoach у MB_KC) — окрема підмножина того самого механізму, щоб не
-	// перетинатись понятійно з іншими підсистемами, які теж читають GNG_DESC.
-	gngDescFearIndices = new Uint32Array(all.slice(-GNG_DESC_FEAR_SUBSET_SIZE));
-	gngDescFearPollHandle = setInterval(function(){
-		const fs = BRAIN.latestFireState;
-		if(!fs) return;
-		let count = 0;
-		for(let i=0; i<gngDescFearIndices.length; i++){ if(fs[gngDescFearIndices[i]]) count++; }
-		if(count > gngDescFearMaxCountSinceCheck) gngDescFearMaxCountSinceCheck = count;
-	}, GNG_DESC_FEAR_POLL_MS);
+// [FULL-CONNECTOME, 2026-09-24] Справжні клітини-рішення. data/neuron_types.json
+// (scripts/build_neuron_types.py) — індекси реальних, описаних у літературі
+// типів клітин FlyWire v783 у порядку воркера. Рішення "злетіти / сісти /
+// ковтати" читаються з їхніх спайків, а стимули (тінь, поштовх тіла) йдуть у
+// них. Замінило колишню "fear-підмножину" GNG_DESC: то були 100 останніх
+// нейронів групи, з яких 60 — висхідні (сигнали від тіла), тож вона читала
+// фон, а не страх, і тримала муху в повітрі по 30с.
+//   loom      LC4 + LPLC2 — детектори тіні, що наближається
+//   escapeDN  DNp01 (гігантське волокно), DNp04, DNp11 — команда втечі;
+//             у спокої мовчать, на тінь спрацьовують на наступному тіку
+//   arousalDN DNp02, DNp06 — зліт від загального збудження; НЕ вибіркові
+//             (запах їжі поруч дає стільки ж, скільки трус) і в грі насичені
+//             вже в спокої, тож рішень з них не читаємо (лише рахуємо)
+//   landingDN DNp07, DNp10 — посадка (Ache et al. 2019); тінь їх глушить
+//   ascending висхідні нейрони — відчуття тіла/лапок (вібрація, біль)
+// Рішення "їсти" зчитати поки не вдається: на стабільному стані мережа
+// перезбуджена — моторні нейрони ковтання (глотковий нерв) б'ють ~3 рази за
+// тік самі по собі, а смак змінює це на рівні шуму. Тож їжа — легасі-правило
+// flybrain (див. стан atfood), до окремого калібрування збудливості мережі.
+let REAL = null;
+fetch('data/neuron_types.json').then(r => r.ok ? r.json() : null).then(d => {
+  if(!d) return;
+  const t = {};
+  for(const k in d){ if(!k.startsWith('_')) t[k] = new Uint32Array(d[k]); }
+  REAL = t;
+}).catch(() => {});
+function realDecisions(){ return !!(REAL && BRAIN.workerReady); }
+// Декодер (калібровано живими прогонами, див. HANDOFF.md 2026-09-24).
+const ESCAPE_TAKEOFF_SPIKES = 1;   // командні нейрони утечі мовчать у спокої — один спайк уже команда
+const REAL_FEAR_PER_SPIKE = 0.25;  // "страх" = зчитування команд утечі, з поступовим згасанням
+const REAL_FEAR_DECAY = 0.8;       // за такт мозку
+const REAL_CALM_MAX_DRIVE = 0;     // спайків команд утечі за такт, що ще вважається "стихло"
+const REAL_CALM_TICKS_TO_LAND = 4; // тактів поспіль (2с) без команд зльоту
+const LANDING_SPIKES = 1;          // DNp07/DNp10 за такт, щоб сісти
+const TASTE_GAIN_BASE = 0.5;
+const SWEET_GAIN_PER_HUNGER = 1.0; // голод 100% → солодкі рецептори ×1.5
+const WATER_GAIN_PER_THIRST = 2.5; // спрага 100% → водяні ×3
+const ROACH_LOOM_GAIN = 3;
+const SHAKE_JOLT_STRONG = 1.5, SHAKE_JOLT_WEAK = 1.0, WIRE_SHOCK_JOLT = 1.5, ROACH_TOUCH_JOLT = 1.0;
+const SLEEP_JOLT_DAMPING = 0.5;
+let lastRealSpikes = null, realFear = 0, realCalmTicks = 0;
+let roachPrevDist = null, lastReflexAt = -Infinity;
+// Рефлекс тіла (вентральний нервовий ланцюжок): вібрація стола, удар струмом
+// чи дотик до лапок підіймають муху в повітря ще до мозку. У реальної
+// дрозофіли цей контур у VNC, якого FlyWire (лише мозок) не містить. Мозок
+// отримує той самий поштовх через висхідні нейрони (stimulateBodyJolt) і
+// далі сам вирішує, коли сісти.
+// Навчене уникання: якщо асоціація "подразник → покарання" (вага в
+// applyMBPlasticityWorker) сильна і подразник поруч, муха відходить від нього.
+// Це вираз ігрової моделі пам'яті, не рішення нейронів: аверсивних MBON у
+// датасеті немає. Вроджена вага чашки (baseline 2/8) сама не спрацьовує.
+const LEARNED_AVOID_MIN = 0.3; // частка стелі ваги
+let lastAvoid = null;
+const AVOID_THOUGHT = { mug: 'Обходить гарячу чашку', wire: 'Обходить дріт — пам\'ятає удар', roach: 'Уникає таргана' };
+function learnedAvoidTarget(){
+  const c = [];
+  if(mugCsPresentThisTick && HEAT_SOURCE) c.push({ x: HEAT_SOURCE.x, y: HEAT_SOURCE.y, w: weights.MB_KC_HOT.MB_MBON_AV, what: 'mug' });
+  if(wireCsPresentThisTick) c.push({ x: WIRE_X, y: WIRE_Y, w: weights.MB_KC_WIRE.MB_MBON_AV, what: 'wire' });
+  if(roachCsPresentThisTick && roach) c.push({ x: roach.x, y: roach.y, w: kcRoachAvWeight, what: 'roach' });
+  let best = null;
+  for(const k of c){ if(k.w/MB_PLASTICITY_CEILING >= LEARNED_AVOID_MIN && (!best || k.w > best.w)) best = k; }
+  return best;
 }
-// Читає-і-скидає раз на такт мозку (runBrainTick, перед BRAIN.update()) —
-// той самий read-and-reset патерн, що й kcSubsetFired().
-function readAndResetGngDescFear(){
-	const v = gngDescFearMaxCountSinceCheck;
-	gngDescFearMaxCountSinceCheck = 0;
-	return v;
+function bodyReflexTakeoff(){
+  if(mode!=='ground' || deathCause) return;
+  lastReflexAt = performance.now();
+  takeoff(0.8, 'reflex');
 }
-// Одноразова пряма ін'єкція в реальні нейрони GNG_DESC — той самий канал
-// (BRAIN.stimulateIndices), що вже й для kcHot/kcWire/kcRoach. intensity
-// узгоджена з існуючими FEAR_SPIKE_*/NOCI-масштабами (підібрано живим
-// тестом нижче), і так само масштабується SLEEP_AROUSAL_DAMPING під час
-// сну — реальний нейрон отримує РЕАЛЬНО слабший вхід уві сні, той самий
-// принцип сенсорного гейтингу, що й для click/shakeTable.
-function stimulateFearGngDesc(intensity){
-	if(!BRAIN.workerReady) return;
-	ensureGngDescFearIndices();
-	if(!gngDescFearIndices) return;
-	const scale = state==='sleep' ? SLEEP_AROUSAL_DAMPING : 1;
-	BRAIN.stimulateIndices(gngDescFearIndices, intensity*scale);
+const realSpikes = { escape:0, arousal:0, landing:0, ticks:0 };
+function countFired(fs, idx){ let c = 0; for(let i=0; i<idx.length; i++){ if(fs[idx[i]]) c++; } return c; }
+BRAIN.onWorkerTick = function(fs){
+  if(!REAL || !fs) return;
+  const esc = countFired(fs, REAL.escapeDN);
+  realSpikes.escape += esc;
+  // Командний нейрон: спайк гігантського волокна = стрибок. Одразу, не
+  // чекаючи такту мозку (500мс), як і справжній рефлекс утечі.
+  if(esc >= ESCAPE_TAKEOFF_SPIKES && mode==='ground' && !deathCause && BRAIN.workerReady){
+    takeoff(0.9, 'escape');
+  }
+  realSpikes.arousal += countFired(fs, REAL.arousalDN);
+  realSpikes.landing += countFired(fs, REAL.landingDN);
+  realSpikes.ticks++;
+};
+function readRealSpikes(){
+  const s = { escape: realSpikes.escape, arousal: realSpikes.arousal, landing: realSpikes.landing, ticks: realSpikes.ticks };
+  realSpikes.escape = 0; realSpikes.arousal = 0; realSpikes.landing = 0; realSpikes.ticks = 0;
+  return s;
 }
-// [FULL-CONNECTOME] Знайдено ПІСЛЯ виправлення глобального scale-бага в
-// sim-worker.js (див. HANDOFF.md): підняти чутливість синапсів означало,
-// що MB_KC (5177 реальних нейронів) став ЗАГАЛОМ значно легше збудливим
-// (реальний фоновий трафік від їжі/зору/центрального комплексу тепер
-// реально доходить крізь MB_KC), і ця фонова активність почала випадково
-// зачіпати ОДИН-ДВА нейрони з наших довільно обраних 60-нейронних
-// підмножин — досить, щоб "будь-хто один спрацював" (стара перевірка)
-// хибно розпізнавав це як "бачу чашку/дріт/таргана", коли муха була
-// зовсім деінде, тримаючи страх намертво на 1.0. Перевірено живо: фоновий
-// шум дає 0-7 із 60 спрацьованих одночасно, а СПРАВЖНЯ цілеспрямована
-// стимуляція (BRAIN.stimulateIndices з нашою інтенсивністю) запалює
-// ~60/60 одразу — розрив величезний. Поріг тут — грубий, але надійний
-// фільтр: справжній CS дає майже всю підмножину одночасно, шум — жменьку.
-const KC_FIRE_COUNT_THRESHOLD = 20; // з 60; фон спостережено 0-7, справжній сигнал ~55-60
-function kcSubsetFiredNow(idxArr){
-	const fs = BRAIN.latestFireState;
-	if(!fs || !idxArr) return false;
-	let count = 0;
-	for(let i=0; i<idxArr.length; i++){ if(fs[idxArr[i]]){ count++; if(count>=KC_FIRE_COUNT_THRESHOLD) return true; } }
-	return false;
+// Тінь, що наростає: кілька послідовних уколів у LC4/LPLC2 (≈ кадри
+// розширення зображення), як у офлайн-перевірці, де 3 кадри по 1.5
+// запускали DNp01 на наступному тіку.
+const LOOM_PULSE = 1.5, LOOM_FRAMES = 3, LOOM_FRAME_MS = 100;
+function stimulateLooming(strength){
+  if(!realDecisions() || strength <= 0) return;
+  for(let k=0; k<LOOM_FRAMES; k++){
+    setTimeout(() => { if(REAL) BRAIN.stimulateIndices(REAL.loom, LOOM_PULSE*strength); }, k*LOOM_FRAME_MS);
+  }
 }
-function kcSubsetFired(idxArr){ // read-and-reset, викликається раз на такт мозку з applyMBPlasticityWorker()
-	if(idxArr === kcHotIndices){ const v = kcHotFiredSinceCheck; kcHotFiredSinceCheck = false; return v; }
-	if(idxArr === kcWireIndices){ const v = kcWireFiredSinceCheck; kcWireFiredSinceCheck = false; return v; }
-	if(idxArr === kcRoachIndices){ const v = kcRoachFiredSinceCheck; kcRoachFiredSinceCheck = false; return v; }
-	return kcSubsetFiredNow(idxArr);
+// Поштовх/біль у тілі: мозок дізнається про нього лише через висхідні
+// нейрони (лапки і тіло сидять у вентральному ланцюжку, якого в FlyWire немає).
+function stimulateBodyJolt(amp){
+  if(!realDecisions() || amp <= 0) return;
+  BRAIN.stimulateIndices(REAL.ascending, amp);
 }
-// BRAIN.stimulateIndices() — ОДНОРАЗОВИЙ укол напруги (V[idx]+=intensity),
-// не "sustained"-стан, що воркер сам перезаливає щовнутрішній тік (10Гц) —
-// той механізм зайнятий бриджевим per-group setStimulusState й конфліктував
-// би з нашим per-index сигналом (звідси 'stimulate', не 'setStimulusState',
-// див. коментар у хуку).
-//
 // ВАЖЛИВО (знайдено емпірично): case 'stimulate' у sim-worker.js активує
 // групу (groupActive=1) лише РАЗ — при ПЕРШОМУ виклику, коли групи ще не
 // було активної (`if (!groupActive[...])`). Повторні виклики, поки група й
@@ -2913,7 +2961,7 @@ function senseWire(){
       BRAIN.stimulate.touchLocation = 'leg';
       wirePunishedThisTick = true;
       lastPainAt = performance.now(); // [FULL-CONNECTOME] для #thought — "Вдарило струмом!"
-      stimulateFearGngDesc(3.0); // [FULL-CONNECTOME] реальний біль — найсильніший GNG_DESC-внесок із усіх тригерів
+      if(realDecisions()){ stimulateBodyJolt(WIRE_SHOCK_JOLT); bodyReflexTakeoff(); }
       if(BRAIN.workerReady && kcWireIndices) BRAIN.stimulateIndices(kcWireIndices, KC_STIM_INTENSITY()*3); // максимальний CS-сигнал, як і легасі VIS_WIRE
     }
   } else if(d < WIRE_SEE_DIST){
@@ -2964,34 +3012,25 @@ function applyMBPlasticity(){
   weights.MB_KC_WIRE.MB_MBON_AV = Math.max(MB_KC_WIRE_BASELINE, weights.MB_KC_WIRE.MB_MBON_AV - MB_PLASTICITY_DECAY);
 }
 
-// [FULL-CONNECTOME] worker-гілка: та сама еligibility-trace-модель, що й
-// легасі вище, але CS-спрацювання читаємо з РЕАЛЬНИХ LIF-спайків
-// (kcSubsetFired — BRAIN.latestFireState по наших фіксованих
-// MB_KC-підмножинах), а US-ґейт — напряму з фізики гри
-// (mugPunishedThisTick/wirePunishedThisTick, виставляються в senseMug/
-// senseWire), а не з фейкового "MB_DAN_PUN спрацював" (та група теж 0
-// реальних нейронів — ніколи б не спрацювала). Вагу зберігаємо в ТИХ
-// САМИХ weights.MB_KC_*.MB_MBON_AV, що й легасі, — лише спосіб їх
-// зростання й читання інший. Вихід (MB_MBON_AV теж 0 реальних нейронів,
-// тож РЕАЛЬНО пропагувати через worker неможливо) синтезуємо напряму в
-// DRIVE_FEAR — той самий канал, що вже надійно веде до втечі (Фаза 1).
+// [FULL-CONNECTOME] worker-гілка навчання — ЧЕСНО: це ігрова модель
+// пластичності, а не пластичність у самих нейронах. Подразник (чашка/дріт/
+// тарган) справді вколює струм у свою підмножину реальних MB_KC-клітин
+// (BRAIN.stimulateIndices), але вага асоціації росте й згасає тут, у грі, за
+// ігровими прапорцями "CS поруч" (mugCsPresentThisTick...) і "покарання"
+// (mugPunishedThisTick...). Зробити її нейронною в цьому датасеті неможливо:
+// аверсивних MBON/DAN у ньому 0 (усі реальні виходи MB_KC — апетитивні
+// MB_MBON_APP/MB_DAN_REW), а читати "чи спрацював CS" зі спайків KC
+// ненадійно — фонова активність MB_KC сама перетинала будь-який розумний
+// поріг. Вираз навченого страху — теж ігровий: у режимі справжніх клітин
+// це уникання (learnedAvoid, муха відходить від впізнаного подразника), а не
+// укол у нейрони. Вагу зберігаємо в тих самих weights.MB_KC_*.MB_MBON_AV.
 const LEARNED_FEAR_MAX_BUMP = 0.15; // при повністю навченій вазі (ceiling=8) — той самий порядок, що FEAR_SPIKE_CLICK
-// Тарган: на відміну від mug/wire, у ЛЕГАСІ моделі MB_KC_ROACH взагалі
-// не існує (роадмап явно відкладав цю фічу — див. HANDOFF.md) — тож
-// немає готового weights.MB_KC_ROACH, яке можна перевикористати як
-// сховище ваги. Власна змінна, той самий baseline/ceiling/decay патерн,
-// що й wire (0 — жодної вродженої відрази до таргана, повністю навчена).
+// Тарган: у легасі-моделі MB_KC_ROACH не існує, тож вага — власна змінна
+// (baseline 0 — жодної вродженої відрази, повністю навчена).
 const MB_KC_ROACH_BASELINE = 0;
 let kcRoachAvWeight = MB_KC_ROACH_BASELINE;
 function applyMBPlasticityWorker(){
   ensureKCSubsets();
-  // eligibility trace й фактична реакція страху гейтуються НАШИМ власним
-  // однозначним ігровим сигналом "CS присутній" (mugCsPresentThisTick і
-  // т.д., виставляються в senseMug/senseWire/senseRoach), а не спробою
-  // відчитати це назад із зашумленої реальної активності мережі — див.
-  // коментар біля оголошення цих змінних вище. kcSubsetFired() і сам
-  // реальний укол через BRAIN.stimulateIndices() нікуди не поділись —
-  // просто більше не єдине джерело правди для "чи спрацював CS".
   if(mugCsPresentThisTick) kcHotTrace = MB_PLASTICITY_TRACE_TICKS;
   else if(kcHotTrace>0) kcHotTrace--;
   if(wireCsPresentThisTick) kcWireTrace = MB_PLASTICITY_TRACE_TICKS;
@@ -3017,15 +3056,12 @@ function applyMBPlasticityWorker(){
   // лишається "липкою" від сліду придатності), масштабована вивченою вагою.
   if(mugCsPresentThisTick){
     BRAIN.drives.fear = Math.min(1, BRAIN.drives.fear + (weights.MB_KC_HOT.MB_MBON_AV/MB_PLASTICITY_CEILING)*LEARNED_FEAR_MAX_BUMP);
-    stimulateFearGngDesc((weights.MB_KC_HOT.MB_MBON_AV/MB_PLASTICITY_CEILING)*2.0); // [FULL-CONNECTOME]
   }
   if(wireCsPresentThisTick){
     BRAIN.drives.fear = Math.min(1, BRAIN.drives.fear + (weights.MB_KC_WIRE.MB_MBON_AV/MB_PLASTICITY_CEILING)*LEARNED_FEAR_MAX_BUMP);
-    stimulateFearGngDesc((weights.MB_KC_WIRE.MB_MBON_AV/MB_PLASTICITY_CEILING)*2.0); // [FULL-CONNECTOME]
   }
   if(roachCsPresentThisTick){
     BRAIN.drives.fear = Math.min(1, BRAIN.drives.fear + (kcRoachAvWeight/MB_PLASTICITY_CEILING)*LEARNED_FEAR_MAX_BUMP);
-    stimulateFearGngDesc((kcRoachAvWeight/MB_PLASTICITY_CEILING)*2.0); // [FULL-CONNECTOME]
   }
 }
 
@@ -3064,10 +3100,15 @@ function findNearestFoodInRange(t){
 let lastPainAt = -Infinity; // виставляється в senseWire()/senseRoach() на реальний больовий контакт
 const THOUGHT_PAIN_WINDOW_MS = 2000;
 function computeThought(t){
+  if(deathCause) return 'Мертва';
   if(t - lastPainAt < THOUGHT_PAIN_WINDOW_MS) return 'Вдарило струмом!';
   if(t < overdoseUntil) return 'Трясе від передозування кофеїном...';
+  if(thirstMaxSec > DEATH_THIRST_GRACE_S*DYING_WARNING_FRACTION) return 'Помирає від спраги...';
+  if(hungerMaxSec > DEATH_HUNGER_GRACE_S*DYING_WARNING_FRACTION) return 'Помирає від голоду...';
+  if(sleepDebtMaxSec > DEATH_SLEEP_DEBT_GRACE_S*DYING_WARNING_FRACTION) return 'Знесилена без сну...';
   if(mode==='air'){
     if(brain.fear > 0.15) return 'Тікає в паніці!';
+    if(t - lastReflexAt < 2500) return 'Злетіла від поштовху';
     return 'Летить';
   }
   if(state==='sleep') return isNight ? 'Спить' : 'Дрімає (сієста)';
@@ -3077,14 +3118,20 @@ function computeThought(t){
     return 'Їсть';
   }
   if(state==='idle') return 'Відпочиває';
+  if(lastAvoid) return AVOID_THOUGHT[lastAvoid];
   const roachNear = roach && Math.hypot(roach.x-pos.x, roach.y-pos.y) < ROACH_CLOSE_DIST*1.5;
-  if(roachNear) return 'Насторожена таргана';
+  if(roachNear) return 'Насторожено: поруч тарган';
   if(chaseFood){
     const thirsty = brain.thirst >= THIRST_SEEK_THRESHOLD/100;
     const hungry = brain.hunger >= HUNGER_SEEK_THRESHOLD/100;
     if(chaseFood.type==='coffee' || (chaseFood.type==='apple' && thirsty && !hungry)) return 'У пошуках води';
     return 'У пошуках їжі';
   }
+  // Голодна/спрагла, але їжі в радіусі нюху немає — шукає навмання.
+  const thirstyNow = brain.thirst >= THIRST_SEEK_THRESHOLD/100;
+  const hungryNow = brain.hunger >= HUNGER_SEEK_THRESHOLD/100;
+  if(thirstyNow && (!hungryNow || brain.thirst >= brain.hunger)) return 'Хоче пити, шукає воду';
+  if(hungryNow) return 'Голодна, шукає їжу';
   if(brain.curiosity > 0.6) return 'Досліджує територію';
   return 'Гуляє';
 }
@@ -3110,9 +3157,19 @@ const AIR_MARGIN = 32; // безпечна зона від країв канва
 // краю: нескінченне "тремтіння" на місці замість реального відходу. Тому тут
 // Math.max(...), а не ||.
 const EDGE_ESCAPE_SPEED = 0.4;
+const ESCAPE_MIN_MS = 1500;
+let escapeUntil = 0;
 
 function takeoff(speed, reason){
   mode='air';
+  // Ground states (sleep/groom/idle/atfood) must not survive into flight:
+  // BRAIN._isSleeping and sleepDebt read `state`, so a fly shaken awake
+  // would otherwise keep "sleeping" in the air.
+  state='walk';
+  atFoodTarget=null;
+  // Real fear/pain flight gets a short guaranteed duration so an exhausted
+  // fly's urgent landing (moveAir) doesn't cancel the escape on frame one.
+  escapeUntil = reason==='explore' ? 0 : performance.now() + ESCAPE_MIN_MS;
   // ЗНАЙДЕНО (Фаза 2, під час навчання чашки/проводу — часті переляки під
   // час groom/idle раптово відкрили це): flightFrames має 5 кадрів, але
   // groomFramesA — 6, idleSheet — свій рахунок; жодна з тих гілок не
@@ -3123,6 +3180,7 @@ function takeoff(speed, reason){
   // патерн скидання, що вже є при вході в walk/groom/idle нижче.
   frameIndex = 0;
   calmStreak = 0; // новий політ — лічильник "стійкого спокою" для приземлення починається заново
+  realCalmTicks = 0;
   ticksAirborne = 0;
   // пік переляку ЦІЄЇ втечі: BRAIN.drives.fear уже несе будь-який сплеск від
   // кліку/струсу (onCanvasClick/shakeTable викликають takeoff() ПІСЛЯ того,
@@ -3167,6 +3225,22 @@ function shakeTable(strong){
   const now = performance.now();
   shakeUntil = now + 550; // тривалість візуального труcу
   spawnCoffeeStain(); // струс розхлюпує каву з чашки — і слабкий, і сильний (за прямою вказівкою користувача)
+  if(deathCause) return;
+  if(realDecisions()){
+    // Вібрацію стола муха відчуває лапками: зліт — рефлекс тіла
+    // (bodyReflexTakeoff), а мозок дізнається про поштовх через висхідні
+    // нейрони й сам вирішує, що далі (коли сісти). Антени теж трусяться —
+    // MECH_JO. Сплячу муху слабкий струс не підіймає.
+    const asleep = state==='sleep';
+    stimulateBodyJolt((strong ? SHAKE_JOLT_STRONG : SHAKE_JOLT_WEAK) * (asleep ? SLEEP_JOLT_DAMPING : 1));
+    BRAIN.stimulate.wind = true; BRAIN.stimulate.windStrength = (strong ? 1 : 0.6) * (asleep ? SLEEP_AROUSAL_DAMPING : 1);
+    BRAIN.update();
+    BRAIN.stimulate.wind = false; BRAIN.stimulate.windStrength = 0;
+    rebuildNeuronPages();
+    if(!asleep || strong) bodyReflexTakeoff();
+    stress = Math.min(100, stress + STRESS_ON_SHAKE * (strong ? 1 : 0.6));
+    return;
+  }
   // [FULL-CONNECTOME, 2026-09-17] "Складніше розбудити" сплячу муху —
   // підвищений поріг чутливості під час сну (реальна сомнологія
   // дрозофіли). SLEEP_AROUSAL_DAMPING применшує ВХІДНИЙ стимул (не сам
@@ -3190,14 +3264,6 @@ function shakeTable(strong){
   // runBrainTick), без окремого таймера мінімального часу польоту.
   BRAIN.drives.fear = Math.min(1, BRAIN.drives.fear + (strong ? FEAR_SPIKE_SHAKE_STRONG : FEAR_SPIKE_SHAKE_WEAK)*arousalScale);
   brain.fear = BRAIN.drives.fear;
-  // [FULL-CONNECTOME] Реальний GNG_DESC-внесок (див. коментар біля
-  // stimulateFearGngDesc) — читається наступним такту мозку
-  // (BRAIN._fearSubsetActivity, той самий "липкий" акумулятор, що й
-  // kcHot/kcWire/kcRoach), не цим-таки миттєвим кліком: той самий
-  // відомий лаг однократних BRAIN.update()-викликів, задокументований
-  // раніше для reward/дофаміну — прийнятно, реальний внесок просто
-  // трохи запізнюється, не втрачається.
-  stimulateFearGngDesc((strong ? 2.5 : 1.5) * arousalScale);
   // takeoff() ПІСЛЯ сплеску fear (не до!), щоб він зафіксував правильний
   // peakFear для цієї конкретної втечі. takeoff() сам БЕЗУМОВНО перемикає
   // mode='air' (не має власного порогу) — для НЕсплячої мухи це навмисно
@@ -3221,9 +3287,13 @@ function onCanvasClick(e){
   const cx=(e.clientX-rect.left)*(canvas.width/rect.width);
   const cy=(e.clientY-rect.top)*(canvas.height/rect.height);
   if(mode==='ground' && zoneAt(cx,cy)==='hot'){ hotMsgUntil=performance.now()+1800; return; }
-  if(mode!=='ground') return; // у польоті лякати вже нема сенсу
+  if(mode!=='ground' || deathCause) return; // у польоті лякати вже нема сенсу
   const dx=cx-pos.x, dy=cy-pos.y;
   if(Math.sqrt(dx*dx+dy*dy) >= 30) return;
+  // Клік = тінь, що раптово нависла. У повному конектомі — справжні
+  // детектори тіні LC4/LPLC2; злетіти чи ні, вирішує гігантське волокно
+  // (див. BRAIN.onWorkerTick). Уві сні сенсорний вхід приглушений.
+  if(realDecisions()){ stimulateLooming(state==='sleep' ? SLEEP_AROUSAL_DAMPING : 1); return; }
   // Клік по мусі = тінь, що раптово нависла зверху ("looming") — реальний
   // loom-детектор VIS_LC і "гігантське волокно" DN_STARTLE Drosophila (в
   // реальних мухах цей контур відомий саме тим, що майже завжди спрацьовує
@@ -3253,7 +3323,6 @@ function onCanvasClick(e){
   // струс/сильний струс, див. shakeTable) — тому найменший сплеск.
   BRAIN.drives.fear = Math.min(1, BRAIN.drives.fear + FEAR_SPIKE_CLICK*arousalScaleClick);
   brain.fear = BRAIN.drives.fear;
-  stimulateFearGngDesc(1.0*arousalScaleClick); // [FULL-CONNECTOME] реальний GNG_DESC-внесок, найслабший з трьох подразників
   if(brain.flight > BEHAVIOR_THRESHOLDS.fly){
     takeoff(0.9);
   }
@@ -3359,6 +3428,7 @@ const LIFT_FORCE_MAX = GRAVITY_ACCEL;
 // рішеннями (відпочити/сісти), і фізикою (втрата підйомної сили).
 const URGENT_LANDING_FATIGUE = 0.8;  // brain.fatigue вище цього — термінове рішення сідати (було: stamina<20%)
 const CALM_MAX_FATIGUE = 0.85;       // brain.fatigue вище цього — приземлення-по-спокою НЕ вважається "спокійним" (було: stamina>15%)
+const SINK_LAND_LIFT_FRACTION = 0.5; // підйомна сила < половини ваги — муха вже не тримається в повітрі
 
 // Пошук найближчої придатної для приземлення точки (розширюємось кільцями
 // від поточної позиції). Використовується для термінового пошуку посадки
@@ -3385,7 +3455,9 @@ function moveAir(t){
   // runBrainTick/loop, поріг restFatigue) — тут той самий сигнал, тільки в
   // повітрі. Муха АКТИВНО летить до найближчої придатної поверхні, а не
   // пасивно чекає, поки випадково над нею опиниться.
-  const urgentLanding = brain.fatigue > URGENT_LANDING_FATIGUE;
+  // У режимі справжніх клітин автопілота посадки немає: сідати вирішує мозок
+  // (runBrainTick), а втома лише зменшує підйомну силу нижче.
+  const urgentLanding = !realDecisions() && brain.fatigue > URGENT_LANDING_FATIGUE && t > escapeUntil;
   if(urgentLanding){
     const target = findNearestLandable(pos.x, pos.y);
     if(target){
@@ -3426,6 +3498,9 @@ function moveAir(t){
   else if(ny > 680-AIR_MARGIN){ ny = 680-AIR_MARGIN; vy = -Math.max(Math.abs(vy), EDGE_ESCAPE_SPEED); }
   pos.x=nx; pos.y=ny;
   if(Math.abs(vx)>0.02) facingLeft = vx<0;
+  // Фізика, не рішення: крила вже не тримають (втома), муха осіла на
+  // поверхню внизу — сідає, якщо там можна стояти.
+  if(realDecisions() && ny >= 680-AIR_MARGIN && liftForce < GRAVITY_ACCEL*SINK_LAND_LIFT_FRACTION){ attemptLand(); }
 
   // Термінова посадка: пробуємо сісти щокадру, поки летимо до цілі — успіх
   // настане, щойно опинимось над придатною зоною (а не чекаємо повного
@@ -3433,10 +3508,323 @@ function moveAir(t){
   if(urgentLanding){ attemptLand(); }
 }
 
+// ---- Тамагочі: пауза вкладки, "докручування" відсутності, збереження, смерть ----
+// Прихована вкладка = світ на паузі (браузер однаково зупиняє
+// requestAnimationFrame, а таймери фону гальмує непередбачувано). Натомість
+// при поверненні (і при відкритті збереженої мухи) тіло одним махом
+// проживає час відсутності в ПОВІЛЬНОМУ темпі: активні темпи гри стиснуті до
+// хвилин, а тамагочі-відсутність має тягнутись годинами.
+const AWAY_TIME_SCALE = 110/7200;   // 1с відсутності = 0.015с тіла: спрага повна за ~2год (в активній грі — за ~110с)
+const AWAY_MIN_MS = 3000;           // коротші відлучки не рахуємо
+const AWAY_STEP_S = 0.5;            // крок симуляції тіла (ефективні секунди) = такт мозку
+const AWAY_GROOM_DUST = 60;         // сама собі почистить лапки, коли пилу стільки
+const MAX_FRAME_DT_S = 0.25;        // стеля кроку на кадр — затримка кадру не дає стрибків шкал
+// Смерть: скільки ЕФЕКТИВНИХ секунд шкала може простояти на максимумі.
+// Активна гра: спрага ~8хв, голод ~12хв. Відсутність (×AWAY_TIME_SCALE):
+// без води ~10-11год від останнього пиття, без їжі ~14-15год.
+const DEATH_THIRST_GRACE_S = 480;
+const DEATH_HUNGER_GRACE_S = 720;
+const DEATH_SLEEP_DEBT_GRACE_S = 600;
+const DYING_WARNING_FRACTION = 0.5;
+const SAVE_KEY = 'flyBrain.save.v1';
+const SAVE_INTERVAL_MS = 5000;
+const AWAY_NOTE_MS = 15000;
+
+let hungerMaxSec = 0, thirstMaxSec = 0, sleepDebtMaxSec = 0;
+let deathCause = null; // null = жива; 'thirst' | 'hunger' | 'sleep'
+let bornAt = Date.now();
+let diedAt = 0;
+let lastSaveAt = 0;
+let lastOwnSaveWall = 0; // Date.now() нашого останнього запису — щоб помітити новіший запис з іншої вкладки
+let hiddenAtPerf = null;
+let deadWorkerStopped = false;
+let awayNoteUntil = 0;
+
+function stepBody(dt, t, away){
+  if(satietyPhase==='coma'){
+    if(t > satietyPhaseUntil){ satietyPhase='digest'; satietyPhaseUntil = t + DIGEST_MS; }
+  } else if(satietyPhase==='digest'){
+    hunger = Math.min(100, hunger + HUNGER_RATE_DIGEST*dt);
+    if(t > satietyPhaseUntil){ satietyPhase='hungry'; }
+  } else {
+    hunger = Math.min(100, hunger + HUNGER_RATE_HUNGRY*dt);
+  }
+  thirst = Math.min(100, thirst + THIRST_RATE*dt);
+
+  dopamine = Math.max(0, dopamine - DOPAMINE_DECAY_PER_SEC*dt);
+  stress = Math.max(0, stress - STRESS_DECAY_PER_SEC*dt);
+  // Постійний тиск голоду на стрес — додається ПІСЛЯ спаду, тож за сталого
+  // високого голоду стрес реально росте, а не просто повільніше спадає.
+  if(hunger > HUNGER_STRESS_THRESHOLD){
+    const hungerExcess = (hunger-HUNGER_STRESS_THRESHOLD)/(100-HUNGER_STRESS_THRESHOLD);
+    stress = Math.min(100, stress + HUNGER_STRESS_RATE_PER_SEC*hungerExcess*dt);
+  }
+
+  // Пил: фоновий осад + випадкові порохові порухи (подразник довкілля, не
+  // рішення мухи). Чистить лапки вже сам конектом — див. runBrainTick.
+  dust = Math.min(100, dust + DUST_BASE_RATE*dt);
+  if(!away && Math.random() < dt*0.05){ dust = Math.min(100, dust + 6 + Math.random()*14); }
+
+  // Борг сну: росте вночі без сну, гаситься сном (компенсаторний rebound).
+  // За відсутності вважаємо, що вночі вона спить.
+  const sleeping = away ? isNight : state==='sleep';
+  if(isNight && !sleeping){
+    sleepDebt = Math.min(SLEEP_DEBT_MAX, sleepDebt + SLEEP_DEBT_GROWTH_PER_SEC*dt);
+  } else if(sleeping){
+    sleepDebt = Math.max(0, sleepDebt - SLEEP_DEBT_RECOVERY_PER_SEC*dt);
+  }
+
+  hungerMaxSec = hunger >= 100 ? hungerMaxSec + dt : 0;
+  thirstMaxSec = thirst >= 100 ? thirstMaxSec + dt : 0;
+  sleepDebtMaxSec = sleepDebt >= SLEEP_DEBT_MAX ? sleepDebtMaxSec + dt : 0;
+  if(!deathCause){
+    if(thirstMaxSec > DEATH_THIRST_GRACE_S) deathCause = 'thirst';
+    else if(hungerMaxSec > DEATH_HUNGER_GRACE_S) deathCause = 'hunger';
+    else if(sleepDebtMaxSec > DEATH_SLEEP_DEBT_GRACE_S) deathCause = 'sleep';
+  }
+}
+
+function setBar(fillEl, labelEl, label, pct){
+  fillEl.style.width = pct.toFixed(0)+'%';
+  labelEl.textContent = label + ': ' + pct.toFixed(0) + '%';
+}
+function updateBars(){
+  setBar(hungerFillEl, hungerLabelEl, 'Голод', hunger);
+  setBar(thirstFillEl, thirstLabelEl, 'Спрага', thirst);
+  setBar(dopamineFillEl, dopamineLabelEl, 'Дофамін', dopamine);
+  setBar(stressFillEl, stressLabelEl, 'Стрес', stress);
+  setBar(dustFillEl, dustLabelEl, 'Пил на лапках', dust);
+  // Витривалість — інше представлення того самого BRAIN.drives.fatigue.
+  setBar(staminaFillEl, staminaLabelEl, 'Витривалість', (1 - brain.fatigue)*100);
+  // Страх і цікавість — сирі знімки BRAIN.drives.* (ті самі, що керують
+  // поведінкою). Страх сплесковий, тож шкала навмисно смикається.
+  setBar(fearFillEl, fearLabelEl, 'Страх', brain.fear*100);
+  setBar(curiosityFillEl, curiosityLabelEl, 'Цікавість', brain.curiosity*100);
+}
+
+// Що муха з'їсть сама за відсутності — той самий вибір і ті самі ефекти,
+// що й у стані atfood, лише без нейронної реакції (мозок на паузі). Їжа на
+// столі не зникає й у живій грі, тож залишена їжа = турбота.
+function pickAwayFood(v, wantFood, wantWater){
+  const ready = foods.filter(f => v >= f.visitedUntil);
+  if(wantFood && wantWater){ const a = ready.find(f=>f.type==='apple'); if(a) return a; }
+  if(wantWater){ const w = ready.find(f=>f.type==='apple' || f.type==='coffee'); if(w) return w; }
+  if(wantFood){ const f = ready.find(f=>f.type==='apple' || f.type==='salami'); if(f) return f; }
+  return null;
+}
+function eatAway(f, v, ev){
+  f.visitedUntil = v + FOOD_COOLDOWN_MS;
+  if(f.type==='coffee'){
+    thirst = Math.max(0, thirst - THIRST_RELIEF_COFFEE);
+    hunger = Math.max(0, hunger - COFFEE_HUNGER_RELIEF);
+    ev.drank++;
+    return;
+  }
+  hunger = 0; satietyPhase = 'coma'; satietyPhaseUntil = v + COMA_MS;
+  if(f.type==='salami') thirst = Math.min(100, thirst + THIRST_PENALTY_SALAMI);
+  else thirst = Math.max(0, thirst - THIRST_RELIEF_APPLE);
+  ev.ate++;
+}
+
+// Таймстемпи тіла (satietyPhaseUntil, f.visitedUntil) мають бути відносні до
+// performance.now() на момент виклику.
+function applyAwayTime(realMs){
+  const before = { hunger, thirst, fatigue: BRAIN.drives.fatigue };
+  const ev = { ate:0, drank:0, groomed:0 };
+  const totalS = realMs/1000*AWAY_TIME_SCALE;
+  const v0 = performance.now();
+  let v = v0;
+  for(let done=0; done < totalS && !deathCause; done += AWAY_STEP_S){
+    const dt = Math.min(AWAY_STEP_S, totalS - done);
+    v += dt*1000;
+    stepBody(dt, v, true);
+    const wantFood = hunger > 70;
+    const wantWater = thirst > THIRST_DRINK_THRESHOLD*100;
+    if(wantFood || wantWater){
+      const f = pickAwayFood(v, wantFood, wantWater);
+      if(f) eatAway(f, v, ev);
+    }
+    if(dust >= AWAY_GROOM_DUST){ dust = 0; ev.groomed++; }
+    const ticks = dt/AWAY_STEP_S;
+    const recovery = FATIGUE_RECOVERY_RATE_BASE * ticks * (isNight ? SLEEP_FATIGUE_RECOVERY_MULT : 1);
+    BRAIN.drives.fatigue = Math.max(0, BRAIN.drives.fatigue - recovery);
+    weights.MB_KC_HOT.MB_MBON_AV = Math.max(MB_KC_HOT_BASELINE, weights.MB_KC_HOT.MB_MBON_AV - MB_PLASTICITY_DECAY*ticks);
+    weights.MB_KC_WIRE.MB_MBON_AV = Math.max(MB_KC_WIRE_BASELINE, weights.MB_KC_WIRE.MB_MBON_AV - MB_PLASTICITY_DECAY*ticks);
+    kcRoachAvWeight = Math.max(MB_KC_ROACH_BASELINE, kcRoachAvWeight - MB_PLASTICITY_DECAY*ticks);
+  }
+  // Повертаємо таймстемпи з віртуального годинника в реальний.
+  const back = v - v0;
+  satietyPhaseUntil -= back;
+  for(const f of foods){ if(f.visitedUntil > 0) f.visitedUntil = Math.max(0, f.visitedUntil - back); }
+  if(hunger < 100) hungerMaxSec = 0;
+  if(thirst < 100) thirstMaxSec = 0;
+  BRAIN.drives.fear = 0;
+  realFear = 0;
+  brain.fatigue = BRAIN.drives.fatigue;
+  brain.fear = 0;
+  lastHungerTick = performance.now();
+
+  if(deathCause){ enterDeadState(true); return; }
+  const parts = [];
+  if(ev.ate) parts.push(ev.ate===1 ? 'поїла' : 'поїла ' + ev.ate + ' ' + pluralUk(ev.ate, 'раз', 'рази', 'разів'));
+  if(ev.drank) parts.push('попила');
+  if(hunger - before.hunger > 25) parts.push('зголодніла');
+  if(thirst - before.thirst > 25) parts.push('захотіла пити');
+  if(isNight) parts.push('поспала');
+  else if(before.fatigue - BRAIN.drives.fatigue > 0.1) parts.push('відпочила');
+  if(ev.groomed) parts.push('почистила лапки');
+  showAwayNote('Поки тебе не було ' + formatDuration(realMs) + ': ' + (parts.length ? parts.join(', ') : 'нічого особливого') + '.');
+}
+
+function pluralUk(n, one, few, many){
+  const m10 = n % 10, m100 = n % 100;
+  if(m10 === 1 && m100 !== 11) return one;
+  if(m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+function formatDuration(ms){
+  const m = Math.floor(ms/60000);
+  if(m < 1) return Math.max(1, Math.round(ms/1000)) + ' с';
+  if(m < 60) return m + ' хв';
+  const h = Math.floor(m/60);
+  if(h < 24) return h + ' год ' + (m%60) + ' хв';
+  return Math.floor(h/24) + ' дн ' + (h%24) + ' год';
+}
+function showAwayNote(text){
+  awayNoteEl.textContent = text;
+  awayNoteEl.hidden = false;
+  awayNoteUntil = performance.now() + AWAY_NOTE_MS;
+}
+
+const DEATH_CAUSE_TEXT = { thirst:'від зневоднення', hunger:'від голоду', sleep:'від виснаження без сну' };
+function enterDeadState(fresh){
+  if(fresh) diedAt = Date.now();
+  state = 'dead'; vx = 0; vy = 0; frameIndex = 0;
+  chaseFood = null; atFoodTarget = null;
+  if(mode==='air'){
+    const spot = findNearestLandable(pos.x, pos.y);
+    if(spot){ pos.x = spot.x; pos.y = spot.y; surfaceZone = zoneAt(spot.x, spot.y); }
+  }
+  mode = 'ground';
+  if(BRAIN.workerReady && BRAIN.stopWorker){ BRAIN.stopWorker(); deadWorkerStopped = true; }
+  deathTextEl.textContent = 'Муха померла ' + DEATH_CAUSE_TEXT[deathCause] + '. Прожила ' + formatDuration(Math.max(0, diedAt - bornAt)) + '.';
+  deathPanelEl.hidden = false;
+  awayNoteEl.hidden = true;
+  saveGame();
+}
+
+function reviveFly(){
+  hunger = 0; thirst = 0; dust = 0; stress = 0; dopamine = 0; sleepDebt = 0;
+  satietyPhase = 'hungry'; satietyPhaseUntil = 0;
+  hungerMaxSec = 0; thirstMaxSec = 0; sleepDebtMaxSec = 0;
+  BRAIN.drives.fatigue = 0; BRAIN.drives.fear = 0; BRAIN.drives.curiosity = 0.5;
+  brain.fatigue = 0; brain.fear = 0; brain.curiosity = 0.5;
+  weights.MB_KC_HOT.MB_MBON_AV = MB_KC_HOT_BASELINE;
+  weights.MB_KC_WIRE.MB_MBON_AV = MB_KC_WIRE_BASELINE;
+  kcRoachAvWeight = MB_KC_ROACH_BASELINE;
+  kcHotTrace = 0; kcWireTrace = 0; kcRoachTrace = 0;
+  caffeineUntil = 0; overdoseUntil = 0; lastPainAt = -Infinity; escapeUntil = 0;
+  realFear = 0; realCalmTicks = 0; lastReflexAt = -Infinity; lastAvoid = null;
+  deathCause = null; diedAt = 0; bornAt = Date.now();
+  mode = 'ground'; state = 'walk'; frameIndex = 0;
+  pos.x = 100; pos.y = 380; surfaceZone = zoneAt(pos.x, pos.y);
+  vx = -0.3; vy = 0;
+  lastHungerTick = performance.now();
+  deathPanelEl.hidden = true;
+  if(deadWorkerStopped && BRAIN.startWorker){ BRAIN.startWorker(); }
+  deadWorkerStopped = false;
+  saveGame();
+}
+
+function saveGame(){
+  try{
+    const now = performance.now();
+    lastOwnSaveWall = Date.now();
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v: 1, savedAt: lastOwnSaveWall, bornAt, diedAt, deathCause,
+      hunger, thirst, dust, stress, sleepDebt,
+      satietyPhase, satietyRemainMs: Math.max(0, satietyPhaseUntil - now),
+      fatigue: BRAIN.drives.fatigue, curiosity: BRAIN.drives.curiosity,
+      learned: { mug: weights.MB_KC_HOT.MB_MBON_AV, wire: weights.MB_KC_WIRE.MB_MBON_AV, roach: kcRoachAvWeight },
+      maxSec: { hunger: hungerMaxSec, thirst: thirstMaxSec, sleep: sleepDebtMaxSec },
+      isNight, pos: { x: pos.x, y: pos.y },
+      foods: foods.map(f => ({ x: f.x, y: f.y, type: f.type })),
+      poops: poops.map(p => ({ x: p.x, y: p.y })),
+    }));
+  }catch(e){}
+}
+
+const LANDABLE_ZONES = new Set(['walk','floor','flight','vertical','pcside']);
+function loadGame(){
+  let d = null;
+  try{ d = JSON.parse(localStorage.getItem(SAVE_KEY)); }catch(e){}
+  if(!d || d.v !== 1) return false;
+  const now = performance.now();
+  lastOwnSaveWall = d.savedAt;
+  bornAt = d.bornAt; diedAt = d.diedAt || 0; deathCause = d.deathCause || null;
+  hunger = d.hunger; thirst = d.thirst; dust = d.dust; stress = d.stress; sleepDebt = d.sleepDebt;
+  satietyPhase = d.satietyPhase; satietyPhaseUntil = now + d.satietyRemainMs;
+  BRAIN.drives.fatigue = d.fatigue; BRAIN.drives.curiosity = d.curiosity;
+  brain.fatigue = d.fatigue; brain.curiosity = d.curiosity;
+  weights.MB_KC_HOT.MB_MBON_AV = d.learned.mug;
+  weights.MB_KC_WIRE.MB_MBON_AV = d.learned.wire;
+  kcRoachAvWeight = d.learned.roach;
+  hungerMaxSec = d.maxSec.hunger; thirstMaxSec = d.maxSec.thirst; sleepDebtMaxSec = d.maxSec.sleep;
+  isNight = !!d.isNight; nightBtn.textContent = isNight ? 'День' : 'Ніч';
+  const z = zoneAt(d.pos.x, d.pos.y);
+  if(LANDABLE_ZONES.has(z)){ pos.x = d.pos.x; pos.y = d.pos.y; surfaceZone = z; }
+  mode = 'ground'; state = 'walk';
+  foods = d.foods.map(f => ({ x: f.x, y: f.y, type: f.type, visitedUntil: 0 }));
+  poops = d.poops.map(p => ({ x: p.x, y: p.y, time: now }));
+  lastHungerTick = now;
+  if(deathCause){ enterDeadState(false); return true; }
+  deathPanelEl.hidden = true;
+  const awayMs = Date.now() - d.savedAt;
+  if(awayMs > AWAY_MIN_MS) applyAwayTime(awayMs);
+  return true;
+}
+function savedByAnotherTab(){
+  try{
+    const d = JSON.parse(localStorage.getItem(SAVE_KEY));
+    return !!d && d.savedAt > lastOwnSaveWall + 1000;
+  }catch(e){ return false; }
+}
+
+function onVisibilityChange(){
+  if(document.hidden){
+    hiddenAtPerf = performance.now();
+    if(BRAIN.stopWorker) BRAIN.stopWorker();
+    saveGame();
+    return;
+  }
+  if(hiddenAtPerf === null) return;
+  // Інша вкладка гри жила, поки ця стояла: підхоплюємо її новіший стан
+  // замість власного застарілого (інакше ця вкладка затерла б той прогрес).
+  if(savedByAnotherTab()){
+    hiddenAtPerf = null;
+    loadGame();
+    if(!deathCause && BRAIN.startWorker){ BRAIN.startWorker(); deadWorkerStopped = false; }
+    return;
+  }
+  const pausedMs = performance.now() - hiddenAtPerf;
+  // Світ стояв: зсуваємо таймери тіла на тривалість паузи, щоб
+  // applyAwayTime рахувала від моменту ховання.
+  if(satietyPhaseUntil > hiddenAtPerf) satietyPhaseUntil += pausedMs;
+  for(const f of foods){ if(f.visitedUntil > hiddenAtPerf) f.visitedUntil += pausedMs; }
+  hiddenAtPerf = null;
+  lastHungerTick = performance.now();
+  if(deathCause) return;
+  if(pausedMs > AWAY_MIN_MS) applyAwayTime(pausedMs);
+  if(!deathCause && BRAIN.startWorker) BRAIN.startWorker();
+}
+
 function loop(t){
+  if(document.hidden){ lastHungerTick = t; requestAnimationFrame(loop); return; }
+  if(deathCause && !deadWorkerStopped && BRAIN.workerReady && BRAIN.stopWorker){ BRAIN.stopWorker(); deadWorkerStopped = true; }
+  if(!awayNoteEl.hidden && t > awayNoteUntil){ awayNoteEl.hidden = true; }
   // [BRAIN] такт конектома flybrain — той самий інтервал (500мс), що й в
   // оригінальному проєкті. Оновлює brain.* знімок, який читають рішення нижче.
-  if(t - lastBrainTick >= BRAIN_TICK_MS){ runBrainTick(t); }
+  if(!deathCause && t - lastBrainTick >= BRAIN_TICK_MS){ runBrainTick(t); }
   // Гортання сторінок нейронного тікера — незалежно від такту мозку
   // (список сторінок оновлюється раз на 500мс, а гортаються вони частіше).
   if(neuronPages.length>1 && t-lastNeuronPageAt>NEURON_PAGE_MS){
@@ -3451,87 +3839,24 @@ function loop(t){
   // мозку: flybrain не моделює травний тракт, тому фази/швидкості лишаються
   // тестовими константами. Результат (0-100) синхронізується в
   // BRAIN.drives.hunger щотакту (runBrainTick) і звідти керує рішеннями.
-  const hDt = (t - lastHungerTick)/1000;
+  const hDt = Math.min(MAX_FRAME_DT_S, (t - lastHungerTick)/1000);
   lastHungerTick = t;
-  if(satietyPhase==='coma'){
-    if(t > satietyPhaseUntil){ satietyPhase='digest'; satietyPhaseUntil = t + DIGEST_MS; }
-    // голод лишається на нулі, поки триває "харчова кома"
-  } else if(satietyPhase==='digest'){
-    hunger = Math.min(100, hunger + HUNGER_RATE_DIGEST*hDt);
-    if(t > satietyPhaseUntil){ satietyPhase='hungry'; }
-  } else {
-    hunger = Math.min(100, hunger + HUNGER_RATE_HUNGRY*hDt);
+  if(!deathCause){
+    stepBody(hDt, t, false);
+    if(deathCause) enterDeadState(true);
   }
-  hungerFillEl.style.width = hunger.toFixed(0)+'%';
-  hungerLabelEl.textContent = 'Голод: ' + hunger.toFixed(0) + '%';
-
-  // [FULL-CONNECTOME] Спрага — проста безперервна фізіологія (без фаз коми/
-  // перетравлення, на відміну від голоду вище — реальна спрага не має
-  // такого аналога), той самий hDt.
-  thirst = Math.min(100, thirst + THIRST_RATE*hDt);
-  thirstFillEl.style.width = thirst.toFixed(0)+'%';
-  thirstLabelEl.textContent = 'Спрага: ' + thirst.toFixed(0) + '%';
-
-  // дофамін і стрес поступово згасають до нуля
-  dopamine = Math.max(0, dopamine - DOPAMINE_DECAY_PER_SEC*hDt);
-  stress = Math.max(0, stress - STRESS_DECAY_PER_SEC*hDt);
-  // Постійний (не одноразовий) тиск голоду: поки голод вище порогу — стрес
-  // додатково накопичується щокадру, пропорційно тому, НАСКІЛЬКИ голод уже
-  // за порогом (0 на самому порозі, максимум на 100%). Додається ПІСЛЯ
-  // звичайного фонового спаду вище — за сталого дуже високого голоду це дає
-  // справжнє чисте зростання, не просто "менш швидкий спад".
-  if(hunger > HUNGER_STRESS_THRESHOLD){
-    const hungerExcess = (hunger-HUNGER_STRESS_THRESHOLD)/(100-HUNGER_STRESS_THRESHOLD);
-    stress = Math.min(100, stress + HUNGER_STRESS_RATE_PER_SEC*hungerExcess*hDt);
-  }
-  dopamineFillEl.style.width = dopamine.toFixed(0)+'%';
-  dopamineLabelEl.textContent = 'Дофамін: ' + dopamine.toFixed(0) + '%';
-  stressFillEl.style.width = stress.toFixed(0)+'%';
-  stressLabelEl.textContent = 'Стрес: ' + stress.toFixed(0) + '%';
-
-  // Пил на лапках: фоновий осад + випадкові порохові порухи (зовнішній
-  // подразник довкілля, не рішення мухи — тому лишається на Math.random(),
-  // так само як тип впалої їжі). Що вона з цим РОБИТЬ (коли зупинитись і
-  // почистити лапки) — вирішує вже сам конектом, див. runBrainTick/нижче.
-  dust = Math.min(100, dust + DUST_BASE_RATE*hDt);
-  if(Math.random() < hDt*0.05){ dust = Math.min(100, dust + 6 + Math.random()*14); }
-  dustFillEl.style.width = dust.toFixed(0)+'%';
-  dustLabelEl.textContent = 'Пил на лапках: ' + dust.toFixed(0) + '%';
-
-  // Борг сну: росте, коли вночі мала б спати, але не спить; гаситься, поки
-  // РЕАЛЬНО спить (не просто idle) — компенсаторний сон, rebound-ефект.
-  if(isNight && state!=='sleep'){
-    sleepDebt = Math.min(SLEEP_DEBT_MAX, sleepDebt + SLEEP_DEBT_GROWTH_PER_SEC*hDt);
-  } else if(state==='sleep'){
-    sleepDebt = Math.max(0, sleepDebt - SLEEP_DEBT_RECOVERY_PER_SEC*hDt);
-  }
-
-  // Витривалість польоту в UI — тепер просто ІНШЕ представлення того самого
-  // BRAIN.drives.fatigue (знімок brain.fatigue), не окремий лічильник:
-  // жодного власного drain/recover тут більше немає (втома росте/спадає
-  // виключно в BRAIN.updateDrives, щотакту мозку — див. FATIGUE_GAIN_*).
-  const staminaPct = (1 - brain.fatigue) * 100;
-  staminaFillEl.style.width = staminaPct.toFixed(0)+'%';
-  staminaLabelEl.textContent = 'Витривалість: ' + staminaPct.toFixed(0) + '%';
-
-  // Страх і цікавість — сирі (без згладжування) знімки BRAIN.drives.fear/
-  // curiosity, ті самі значення, що й зараз керують поведінкою (швидкість
-  // ходьби, вибір "тікати/досліджувати", computeThought). Страх — сплесковий
-  // драйв (різкий стрибок від дроту/таргана, швидке згасання), тому шкала
-  // навмисно смикається — це чесне відображення реальної динаміки, не баг.
-  const fearPct = brain.fear*100;
-  fearFillEl.style.width = fearPct.toFixed(0)+'%';
-  fearLabelEl.textContent = 'Страх: ' + fearPct.toFixed(0) + '%';
-  const curiosityPct = brain.curiosity*100;
-  curiosityFillEl.style.width = curiosityPct.toFixed(0)+'%';
-  curiosityLabelEl.textContent = 'Цікавість: ' + curiosityPct.toFixed(0) + '%';
+  updateBars();
+  if(t - lastSaveAt > SAVE_INTERVAL_MS){ lastSaveAt = t; saveGame(); }
 
   // Пасивний "чекай, поки випадково опинишся над придатною зоною" retry тут
   // більше не потрібен — moveAir() сама активно летить до найближчої
   // придатної поверхні й пробує сісти щокадру, щойно brain.fatigue переходить
   // URGENT_LANDING_FATIGUE (див. moveAir).
 
-  if(mode==='air'){
+  if(deathCause){
+    statusEl.textContent = 'муха мертва';
+    thoughtEl.textContent = computeThought(t);
+  } else if(mode==='air'){
     moveAir(t);
     if(t-lastFrameTime>90){ frameIndex=(frameIndex+1)%5; lastFrameTime=t; }
     statusEl.textContent = hotMsg ? 'занадто гаряче — тут сідати не можна'
@@ -3583,6 +3908,7 @@ function loop(t){
       // незалежно від голоду — реальна фізіологія, не лише голод жене до їжі.
       const isCoffeeTarget = atFoodTarget && atFoodTarget.type==='coffee';
       const isWaterTarget = isCoffeeTarget || (atFoodTarget && atFoodTarget.type==='apple');
+      // Легасі-правило flybrain (не зчитування клітин — див. коментар біля REAL).
       const feedReady = brain.feed > BEHAVIOR_THRESHOLDS.feed || (brain.hunger > 0.7 && brain.foodNearby)
         || (isWaterTarget && brain.thirst > THIRST_DRINK_THRESHOLD && brain.foodNearby);
       if(feedReady){
@@ -3680,9 +4006,17 @@ function loop(t){
       // тут той самий дебаунс-лічильник, що й у senseRoach() для VIS_LC —
       // "відповзти" починається рівно тоді, коли й конектом реально починає
       // на це реагувати (не раніше і не пізніше).
-      const roachFleeing = roach!==null && roachDist < ROACH_CLOSE_DIST && roachCloseStreak >= VISION_LOOM_STREAK_NEEDED;
+      // У режимі справжніх клітин на таргана реагує мозок (тінь → гігантське
+      // волокно → зліт); скриптової втечі пішки немає. Лишається навчене
+      // уникання — ігрова модель пам'яті (learnedAvoidTarget).
+      const avoidTarget = realDecisions() ? learnedAvoidTarget() : null;
+      lastAvoid = avoidTarget ? avoidTarget.what : null;
+      const roachFleeing = avoidTarget
+        ? true
+        : (!realDecisions() && roach!==null && roachDist < ROACH_CLOSE_DIST && roachCloseStreak >= VISION_LOOM_STREAK_NEEDED);
       if(roachFleeing){
-        const away = Math.atan2(pos.y-roach.y, pos.x-roach.x);
+        const src = avoidTarget || roach;
+        const away = Math.atan2(pos.y-src.y, pos.x-src.x);
         const speed = groundSpeed(); // [BRAIN] та сама fear-масштабована швидкість, що й скрізь
         const awayVx = Math.cos(away)*speed, awayVy = Math.sin(away)*speed;
         if(!blocked(pos.x+awayVx, pos.y+awayVy)){ vx=awayVx; vy=awayVy; }
@@ -3728,14 +4062,14 @@ function loop(t){
         // (satietyPhase==='coma'). Тривалість росте і з поточною втомою, і
         // з боргом сну (SLEEP_DEBT_BONUS_MS) — компенсаторний сон довший,
         // якщо вночі часто турбували.
-        const wantsNightSleep = isNight && brain.fatigue > SLEEP_FATIGUE_NIGHT;
+        const wantsNightSleep = isNight && (brain.fatigue > SLEEP_FATIGUE_NIGHT || sleepDebt > SLEEP_DEBT_NIGHT_TRIGGER);
         const wantsSiesta = !isNight && satietyPhase==='coma' && brain.fatigue > SIESTA_FATIGUE_DAY;
         // [BRAIN] "йти далі чи відпочити" (звичайний денний ідле, не сон) —
         // той самий поріг DRIVE_FATIGUE, що й restFatigue у
         // BEHAVIOR_THRESHOLDS (js/fly-logic.js flybrain).
         if(wantsNightSleep || wantsSiesta){
           state='sleep';
-          stateUntil = t + SLEEP_BASE_MS + brain.fatigue*SLEEP_FATIGUE_SCALE_MS + (sleepDebt/SLEEP_DEBT_MAX)*SLEEP_DEBT_BONUS_MS;
+          stateUntil = t + SLEEP_BASE_MS + (isNight ? NIGHT_SLEEP_BONUS_MS : 0) + brain.fatigue*SLEEP_FATIGUE_SCALE_MS + (sleepDebt/SLEEP_DEBT_MAX)*SLEEP_DEBT_BONUS_MS;
           lastFrameTime=t;
           // [FULL-CONNECTOME, 2026-09-17] Той самий клас бага, що й
           // atfood/groom-дрейф (tryMoveGround() інакше й далі застосовує
@@ -3851,7 +4185,7 @@ function loop(t){
   }
 
   // "Какання" — лише коли муха стоїть на поверхні (не в польоті)
-  if(mode==='ground' && t > nextPoopAt){
+  if(mode==='ground' && !deathCause && t > nextPoopAt){
     poops.push({x:pos.x, y:pos.y, time:t});
     dopamine = Math.min(100, dopamine + DOPAMINE_ON_POOP); // [BRAIN] flybrain не моделює цей шлях — лишається фіксованим
     nextPoopAt = t + 6000 + brain.curiosity*10000; // [BRAIN] той самий шум DRIVE_CURIOSITY, що й у плануванні вище
@@ -3932,7 +4266,12 @@ function loop(t){
   let img, sx, sw, sh, destW, destH, destX, destY;
   let climbRotation = 0;   // 'vertical' — поворот під фактичний вектор руху
   let pcsideMirrorY = 1;   // 'pcside' — рух вниз додає вертикальне дзеркало
-  if(mode==='ground' && isWalking && surfaceZone==='vertical'){
+  if(deathCause){
+    const b = idleSheet.bounds[0];
+    img=idleSheet.img; sx=b.x0; sw=b.sw; sh=idleSheet.fh;
+    destW=sw*idleSheet.scale; destH=sh*idleSheet.scale;
+    destX=-idleSheet.centerCol*idleSheet.scale; destY=-idleSheet.centerRow*idleSheet.scale;
+  } else if(mode==='ground' && isWalking && surfaceZone==='vertical'){
     const cf = climbFrames[frameIndex];
     img=climbImg; sx=cf.x0; sw=cf.sw; sh=climbImg.height;
     destW=sw*cf.scale; destH=sh*cf.scale;
@@ -4045,6 +4384,7 @@ function loop(t){
   // Рух вгору/вниз не змінює орієнтацію — стандартна анімація як є.
   if(shouldFlip) ctx.scale(-1,1);
   if(mode==='air') ctx.globalAlpha = 0.92;
+  if(deathCause){ ctx.scale(1,-1); ctx.filter = 'grayscale(1) brightness(0.75)'; }
   ctx.drawImage(img, sx,0,sw,sh, destX,destY,destW,destH);
   ctx.restore();
 
@@ -4057,7 +4397,7 @@ function loop(t){
 <!-- [FULL-CONNECTOME] upstream snedea/flybrain worker bridge — auto-inits
      on load, overrides BRAIN.update once ready. Requires HTTP(S), see
      HANDOFF.md. -->
-<script src="js/brain-worker-bridge.js?v=4"></script>
+<script src="js/brain-worker-bridge.js?v=6"></script>
 
 <!-- [FULL-CONNECTOME] жива 3D карта активації повного конектома — НАША
      фіча, не з upstream flybrain. Three.js з CDN, реальні координати

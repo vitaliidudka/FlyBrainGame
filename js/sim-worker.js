@@ -46,6 +46,7 @@ var leakRate = DEFAULT_LEAK_RATE;
 var threshold = DEFAULT_THRESHOLD;
 var refractoryPeriod = DEFAULT_REFRACTORY_PERIOD;
 var running = false;
+var tickTimer = null;
 var sustainedIndices = null;
 var sustainedIntensities = null;
 var tickCount = 0;
@@ -414,9 +415,10 @@ function tick() {
 	}
 
 	/* schedule next tick at target rate */
+	tickTimer = null;
 	if (running) {
 		var interval = Math.max(0, Math.floor(1000 / targetTickRate - elapsed));
-		setTimeout(tick, interval);
+		tickTimer = setTimeout(tick, interval);
 	}
 }
 
@@ -458,12 +460,17 @@ self.onmessage = function (e) {
 			self.postMessage({type: 'error', message: 'Cannot start: not initialized'});
 			return;
 		}
+		// A stop+start pair arriving before the pending tick fires would
+		// otherwise leave two tick loops running (double sim speed).
+		if (running) break;
 		running = true;
-		setTimeout(tick, 0);
+		if (tickTimer !== null) clearTimeout(tickTimer);
+		tickTimer = setTimeout(tick, 0);
 		break;
 
 	case 'stop':
 		running = false;
+		if (tickTimer !== null) { clearTimeout(tickTimer); tickTimer = null; }
 		break;
 
 	case 'stimulate':
