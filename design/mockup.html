@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fly Brain — макет UI</title>
+<!--
+  Статичний макет нового UI (референс: "CAMERA_01 / LAB_MAIN" + панель
+  аналізу мережі). НЕ підключений до гри: значення барів і спалахи
+  нейронів тут — демо-анімація. Реальні ассети проєкту: фон кімнати
+  (витягнутий із fly-pixel-game.html → design/room-*.jpg), спрайт мухи
+  (assets/idle.png), координати 139 255 нейронів FlyWire
+  (data/neuron_positions.bin.gz — потрібен HTTP-сервер, див. CLAUDE.md).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Pixelify+Sans:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #0e0f10;
+    --panel:     #16181a;
+    --panel-2:   #1b1e20;
+    --line:      #2a2e31;
+    --line-2:    #353a3e;
+    --text:      #e6e2d8;
+    --text-dim:  #8d918f;
+    --text-mute: #5d6260;
+    --neuro:     #3fd0c9;   /* бірюзовий — мозок / дані */
+    --neuro-dim: #1d5e5b;
+    --body:      #e8a33d;   /* бурштиновий — тіло / фізіологія */
+    --body-dim:  #6b4a1c;
+    --danger:    #e2552b;   /* червоно-помаранчевий — небезпека / дія */
+    --ok:        #9bd46a;
+    --radius:    4px;
+    --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    --sans: 'IBM Plex Sans', system-ui, sans-serif;
+    --pixel: 'Pixelify Sans', var(--mono);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; color: inherit; }
+
+  .app {
+    display: grid;
+    grid-template-columns: auto minmax(360px, 1fr);
+    gap: 16px;
+    height: 100vh;
+    padding: 16px;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+
+  /* ─────────── СЦЕНА ─────────── */
+  .stage {
+    position: relative;
+    height: calc(100vh - 32px);
+    aspect-ratio: 380 / 680;
+    border: 1px solid var(--line-2);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #000;
+    isolation: isolate;
+  }
+  .stage .room {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    image-rendering: pixelated;
+    transition: opacity .6s ease;
+  }
+  .stage .room.night { opacity: 0; }
+  .stage.is-night .room.night { opacity: 1; }
+  .scrim {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 42%; z-index: 6;
+    background: linear-gradient(to top, rgba(8,9,10,.94) 0%, rgba(8,9,10,.78) 45%, transparent 100%);
+    pointer-events: none;
+  }
+
+  .cam-chip {
+    position: absolute; top: 14px; left: 14px; z-index: 7;
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    background: rgba(10,11,12,.78);
+    border: 1px solid rgba(255,255,255,.08);
+    font: 500 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+  }
+  .rec { width: 7px; height: 7px; border-radius: 50%; background: var(--neuro); box-shadow: 0 0 8px var(--neuro); animation: blink 2s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .cam-time { position: absolute; top: 14px; right: 14px; z-index: 7; font: 500 11px/1 var(--mono); color: rgba(255,255,255,.55); padding: 6px 0; letter-spacing: .06em; }
+
+  /* муха + приціл */
+  .fly {
+    position: absolute; z-index: 4;
+    left: 70%; top: 58%;
+    width: 17%; aspect-ratio: 365 / 330;
+    transform: translate(-50%, -50%);
+  }
+  .fly canvas { width: 100%; height: 100%; image-rendering: pixelated; filter: drop-shadow(0 3px 2px rgba(0,0,0,.45)); }
+  .fly .shadow {
+    position: absolute; left: 12%; right: 10%; bottom: 2%; height: 12%;
+    background: radial-gradient(ellipse, rgba(0,0,0,.35), transparent 70%);
+    z-index: -1;
+  }
+  .reticle { position: absolute; inset: -18% -14%; pointer-events: none; }
+  .reticle i { position: absolute; width: 10px; height: 10px; border-color: var(--neuro); border-style: solid; opacity: .9; }
+  .reticle i:nth-child(1) { top: 0; left: 0; border-width: 2px 0 0 2px; }
+  .reticle i:nth-child(2) { top: 0; right: 0; border-width: 2px 2px 0 0; }
+  .reticle i:nth-child(3) { bottom: 0; left: 0; border-width: 0 0 2px 2px; }
+  .reticle i:nth-child(4) { bottom: 0; right: 0; border-width: 0 2px 2px 0; }
+  .reticle span {
+    position: absolute; left: 100%; top: -2px; margin-left: 6px; white-space: nowrap;
+    font: 500 10px/1 var(--mono); color: var(--neuro); letter-spacing: .06em;
+    background: rgba(8,9,10,.7); padding: 3px 5px;
+  }
+
+  .hud-bottom {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 7;
+    padding: 0 18px 18px;
+  }
+  .eyebrow {
+    font: 500 11px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--neuro); margin-bottom: 8px;
+  }
+  .state-title {
+    margin: 0;
+    font: 700 clamp(26px, 3.4vh, 36px)/1.05 var(--pixel);
+    letter-spacing: .02em; text-transform: uppercase;
+    text-shadow: 0 2px 0 rgba(0,0,0,.6);
+  }
+  .thought {
+    margin: 8px 0 0; font-size: 15px; font-style: italic; color: #f0d878;
+    min-height: 1.4em;
+  }
+  .thought::before { content: "« "; color: var(--text-mute); font-style: normal; }
+  .thought::after  { content: " »"; color: var(--text-mute); font-style: normal; }
+
+  .actions {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+    margin-top: 16px;
+  }
+  .act {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    padding: 10px 4px 9px;
+    background: rgba(22,24,26,.9);
+    border: 1px solid var(--line-2);
+    border-bottom: 2px solid var(--line-2);
+    border-radius: var(--radius);
+    font: 700 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--body);
+    cursor: pointer;
+    transition: background .12s, border-color .12s, transform .06s;
+  }
+  .act svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .act:hover { background: rgba(40,33,22,.95); border-color: var(--body-dim); border-bottom-color: var(--body); }
+  .act:active, .act.pulse { transform: translateY(1px); background: var(--body); color: #1a1208; border-color: var(--body); }
+  .act[aria-pressed="true"] { color: var(--neuro); border-bottom-color: var(--neuro); }
+  .act:focus-visible { outline: 2px solid var(--neuro); outline-offset: 2px; }
+
+  /* ─────────── ПРАВА ПАНЕЛЬ ─────────── */
+  .side {
+    min-width: 0;
+    display: flex; flex-direction: column; gap: 12px;
+    min-height: 0; overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: var(--line-2) transparent;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .kicker { font: 500 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text-mute); }
+  .card-title { margin: 6px 0 0; font: 700 15px/1.2 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+
+  /* ідентичність тамагочі */
+  .subject { display: flex; align-items: center; gap: 14px; padding: 12px 16px; }
+  .subject .avatar { width: 40px; height: 40px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--panel-2); display: grid; place-items: center; }
+  .subject .avatar canvas { width: 34px; image-rendering: pixelated; }
+  .subject .name { font: 700 16px/1 var(--pixel); letter-spacing: .03em; }
+  .subject .meta { font: 400 11px/1.4 var(--mono); color: var(--text-dim); margin-top: 4px; }
+  .pill {
+    margin-left: auto; padding: 5px 9px;
+    font: 700 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+    border: 1px solid currentColor; border-radius: 999px; color: var(--ok);
+  }
+
+  .brain-wrap { position: relative; border: 1px solid var(--line); background: #050607; aspect-ratio: 2 / 1; overflow: hidden; }
+  .brain-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .brain-chip {
+    position: absolute; left: 10px; bottom: 10px;
+    padding: 5px 8px; border: 1px solid var(--neuro-dim); background: rgba(5,6,7,.8);
+    font: 500 10px/1 var(--mono); letter-spacing: .08em; color: var(--neuro); text-transform: uppercase;
+  }
+  .brain-legend { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 10px; font: 400 10px/1 var(--mono); color: var(--text-dim); }
+  .brain-legend b { display: inline-block; width: 7px; height: 7px; margin-right: 5px; vertical-align: 0; }
+  .brain-loading { position: absolute; inset: 0; display: grid; place-items: center; font: 400 11px var(--mono); color: var(--text-mute); }
+
+  .ticker {
+    margin-top: 10px; padding: 7px 10px;
+    background: var(--panel-2); border-left: 2px solid var(--neuro);
+    font: 400 11px/1.3 var(--mono); color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ticker em { font-style: normal; color: var(--neuro); }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
+  .stat .k { font: 500 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-mute); }
+  .stat .v { margin-top: 6px; font: 700 14px/1 var(--mono); color: var(--neuro); font-variant-numeric: tabular-nums; }
+
+  .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .tool {
+    display: flex; align-items: center; gap: 12px; text-align: left;
+    padding: 12px 14px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    transition: border-color .12s, background .12s;
+  }
+  .tool:hover { border-color: var(--neuro-dim); background: var(--panel-2); }
+  .tool[aria-pressed="true"] { border-color: var(--neuro); }
+  .tool svg { flex: none; width: 20px; height: 20px; stroke: var(--neuro); fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .tool .t { font: 700 12px/1.2 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+  .tool .d { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+  .tool:focus-visible { outline: 2px solid var(--neuro); outline-offset: 2px; }
+
+  .groups { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 28px; }
+  .group-h {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    font: 500 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim);
+  }
+  .group-h::before { content: ""; width: 8px; height: 8px; background: var(--c); }
+  .group-h::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .meter { margin-bottom: 14px; }
+  .meter:last-child { margin-bottom: 0; }
+  .meter-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .meter-row .l { font-size: 13px; font-weight: 500; }
+  .meter-row .n { font: 700 12px/1 var(--mono); color: var(--c); font-variant-numeric: tabular-nums; }
+  .track { position: relative; height: 6px; background: #0c0d0e; border: 1px solid var(--line); overflow: hidden; }
+  .fill {
+    position: absolute; inset: 0 auto 0 0; width: 0;
+    background: var(--c);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--c) 50%, transparent);
+    transition: width .5s ease, background .3s;
+  }
+  /* піксельна сітка поверх заповнення — перегукується з піксель-артом */
+  .track::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 5px, rgba(0,0,0,.55) 5px 6px); }
+  .meter.hot { --c: var(--danger) !important; }
+  .g-body  { --c: var(--body); }
+  .g-brain { --c: var(--neuro); }
+
+  .foot { font: 400 10px/1.5 var(--mono); color: var(--text-mute); padding: 0 2px; }
+
+  /* ─────────── Адаптив ─────────── */
+  @media (max-width: 960px) {
+    .app { grid-template-columns: minmax(0, 1fr); height: auto; padding: 12px; }
+    .stage { height: auto; width: 100%; max-width: 480px; margin: 0 auto; }
+    .side { overflow: visible; }
+  }
+  @media (max-width: 520px) {
+    .groups { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .tools { grid-template-columns: 1fr; }
+    .act { font-size: 10px; }
+    .brain-legend { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rec { animation: none; }
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ═════════ СЦЕНА ═════════ -->
+  <section class="stage" id="stage" aria-label="Камера: кімната з мухою">
+    <img class="room day"   src="room-day.jpg"   alt="">
+    <img class="room night" src="room-night.jpg" alt="">
+
+    <div class="fly" id="fly">
+      <div class="shadow"></div>
+      <canvas id="flyCanvas" width="365" height="330"></canvas>
+      <div class="reticle"><i></i><i></i><i></i><i></i><span>SUBJ-01</span></div>
+    </div>
+
+    <div class="cam-chip"><span class="rec"></span>Camera_01 / Lab_main</div>
+    <div class="cam-time" id="camTime">00:00:00</div>
+
+    <div class="scrim"></div>
+    <div class="hud-bottom">
+      <div class="eyebrow">Поточний стан · FlyWire FAFB v783</div>
+      <h1 class="state-title" id="stateTitle">Гуляє столом</h1>
+      <p class="thought" id="thought">тут щось солодко пахне…</p>
+
+      <div class="actions">
+        <button class="act" data-act="shake">
+          <svg viewBox="0 0 24 24"><path d="M3 8c3-2 5 2 9 0s6-2 9 0M3 13c3-2 5 2 9 0s6-2 9 0M3 18c3-2 5 2 9 0s6-2 9 0"/></svg>
+          Труснути
+        </button>
+        <button class="act" data-act="clean">
+          <svg viewBox="0 0 24 24"><path d="M9 3h6l-1 6h4l1 12H5l1-12h4z"/><path d="M9 14v4M12 14v4M15 14v4"/></svg>
+          Очистити
+        </button>
+        <button class="act" data-act="food">
+          <svg viewBox="0 0 24 24"><path d="M12 7c-2-3-8-2-8 4 0 5 4 10 8 9 4 1 8-4 8-9 0-6-6-7-8-4z"/><path d="M12 7c0-2 1-4 3-4"/></svg>
+          Їжа
+        </button>
+        <button class="act" data-act="night" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+          Ніч
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════ ПАНЕЛЬ ═════════ -->
+  <aside class="side">
+
+    <div class="card subject">
+      <div class="avatar"><canvas id="avatarCanvas" width="365" height="330"></canvas></div>
+      <div>
+        <div class="name">Муха-01</div>
+        <div class="meta">вік 3 д 04 год · 12 перекусів · 0 смертей</div>
+      </div>
+      <span class="pill" id="healthPill">Жива</span>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="kicker">Конектом · 63 функціональні групи</div>
+          <h2 class="card-title">Нейронна активність</h2>
+        </div>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--neuro)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6"/></svg>
+      </div>
+
+      <div class="brain-wrap">
+        <canvas id="brainCanvas"></canvas>
+        <div class="brain-loading" id="brainLoading">завантаження 139 255 нейронів…</div>
+        <div class="brain-chip" id="spikeChip">— спайків / тік</div>
+        <div class="brain-legend">
+          <span><b style="background:var(--neuro)"></b>сенсорні</span>
+          <span><b style="background:var(--body)"></b>центральні</span>
+          <span><b style="background:#fff"></b>спайк</span>
+        </div>
+      </div>
+
+      <div class="ticker" id="ticker"><em>▸</em> VIS_LO · MB_KC · CX_EPG · GNG_DESC · DRIVE_HUNGER</div>
+
+      <div class="stats">
+        <div class="stat"><div class="k">Нейрони</div><div class="v">139 255</div></div>
+        <div class="stat"><div class="k">Синапси</div><div class="v">2 698 236</div></div>
+        <div class="stat"><div class="k">Групи</div><div class="v">63</div></div>
+        <div class="stat"><div class="k">Такт</div><div class="v" id="tickMs">2.6 ms</div></div>
+      </div>
+    </div>
+
+    <div class="tools">
+      <button class="tool" data-tool="zones" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></svg>
+        <span><div class="t">Зони на карті</div><div class="d">де можна ходити й що гаряче</div></span>
+      </button>
+      <button class="tool" data-tool="3d" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 22V12M21 7l-9 5-9-5"/></svg>
+        <span><div class="t">3D мозок</div><div class="d">обертати живу карту спайків</div></span>
+      </button>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="kicker">Телеметрія суб'єкта</div>
+          <h2 class="card-title">Тіло і драйви</h2>
+        </div>
+        <span class="pill" id="statePill">Стабільна</span>
+      </div>
+
+      <div class="groups">
+        <div class="g-body">
+          <div class="group-h">Тіло</div>
+          <div class="meter" data-k="hunger"><div class="meter-row"><span class="l">Голод</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+          <div class="meter" data-k="thirst"><div class="meter-row"><span class="l">Спрага</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+          <div class="meter" data-k="stamina" data-invert><div class="meter-row"><span class="l">Витривалість</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+          <div class="meter" data-k="dust"><div class="meter-row"><span class="l">Пил на лапках</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+        </div>
+        <div class="g-brain">
+          <div class="group-h">Мозок</div>
+          <div class="meter" data-k="dopamine" data-nohot><div class="meter-row"><span class="l">Дофамін</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+          <div class="meter" data-k="stress"><div class="meter-row"><span class="l">Стрес</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+          <div class="meter" data-k="fear"><div class="meter-row"><span class="l">Страх</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+          <div class="meter" data-k="curiosity" data-nohot><div class="meter-row"><span class="l">Цікавість</span><span class="n">0%</span></div><div class="track"><div class="fill"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <p class="foot">Макет UI · значення й спалахи — демо, не з симуляції. Шкали — тільки показ реальних драйвів; керування — через стимули на сцені.</p>
+  </aside>
+</div>
+
+<script>
+/* ── Спрайт мухи (assets/idle.png, 3 кадри) ── */
+const idle = new Image();
+idle.src = '../assets/idle.png';
+const flyCtx = document.getElementById('flyCanvas').getContext('2d');
+const avCtx  = document.getElementById('avatarCanvas').getContext('2d');
+[flyCtx, avCtx].forEach(c => c.imageSmoothingEnabled = false);
+const FRAMES = 3, CROP_Y = 300, CROP_H = 330;
+let frame = 0;
+function drawFly(){
+  if(!idle.complete || !idle.naturalWidth) return;
+  const x0 = Math.round(idle.naturalWidth * frame / FRAMES);
+  const sw = Math.round(idle.naturalWidth * (frame + 1) / FRAMES) - x0;
+  flyCtx.clearRect(0, 0, 365, 330);
+  flyCtx.drawImage(idle, x0, CROP_Y, sw, CROP_H, 0, 0, sw, CROP_H);
+}
+idle.onload = () => {
+  drawFly();
+  avCtx.drawImage(idle, 0, CROP_Y, 365, CROP_H, 0, 0, 365, 330);
+};
+setInterval(() => { frame = (frame + 1) % FRAMES; drawFly(); }, 420);
+
+/* ── Годинник камери ── */
+const camTime = document.getElementById('camTime');
+setInterval(() => { camTime.textContent = new Date().toLocaleTimeString('uk-UA', {hour12:false}); }, 1000);
+
+/* ── Мозок: реальні координати FlyWire, 2D-проєкція ── */
+const bc = document.getElementById('brainCanvas');
+const bctx = bc.getContext('2d');
+let P = null, N = 0, act = null, lateral = null, W = 0, H = 0, img = null, accR, accG, accB;
+
+async function loadPositions(){
+  const res = await fetch('../data/neuron_positions.bin.gz');
+  if(!res.ok) throw new Error('HTTP ' + res.status);
+  const buf = await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+  P = new Float32Array(buf); N = P.length / 3;
+  act = new Float32Array(N);
+  lateral = new Uint8Array(N);
+  // оптичні частки лежать латерально — фарбуємо їх як сенсорні
+  for(let i = 0; i < N; i++) lateral[i] = Math.abs(P[i*3]) > 52 ? 1 : 0;
+  document.getElementById('brainLoading').remove();
+  resize(); requestAnimationFrame(render);
+  setInterval(demoTick, 100);
+}
+function resize(){
+  const r = bc.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+  W = bc.width = Math.round(r.width * dpr); H = bc.height = Math.round(r.height * dpr);
+  img = bctx.createImageData(W, H);
+  accR = new Float32Array(W*H); accG = new Float32Array(W*H); accB = new Float32Array(W*H);
+}
+addEventListener('resize', () => P && resize());
+
+let t0 = performance.now();
+function render(now){
+  const a = Math.sin((now - t0) / 6000) * 0.35;      // повільне похитування
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const s = Math.min(W / 235, H / 104);
+  const cx = W / 2, cy = H / 2 + 2;
+  accR.fill(0); accG.fill(0); accB.fill(0);
+  for(let i = 0; i < N; i++){
+    const x = P[i*3], y = P[i*3+1], z = P[i*3+2];
+    const px = (x * ca + z * sa) * s + cx;
+    const py = y * s + cy;
+    const ix = px | 0, iy = py | 0;
+    if(ix < 0 || iy < 0 || ix >= W || iy >= H) continue;
+    const k = iy * W + ix, f = act[i];
+    if(lateral[i]){ accR[k] += 0.05 + f*1.2; accG[k] += 0.20 + f*1.2; accB[k] += 0.24 + f*1.2; }
+    else          { accR[k] += 0.26 + f*1.2; accG[k] += 0.17 + f*1.2; accB[k] += 0.06 + f*1.2; }
+  }
+  const d = img.data;
+  for(let k = 0, j = 0; k < accR.length; k++, j += 4){
+    // м'яке тон-маппування, щоб густі кластери не вигоряли в біле
+    d[j]   = 255 * (1 - Math.exp(-accR[k] * 2.6));
+    d[j+1] = 255 * (1 - Math.exp(-accG[k] * 2.6));
+    d[j+2] = 255 * (1 - Math.exp(-accB[k] * 2.6));
+    d[j+3] = 255;
+  }
+  bctx.putImageData(img, 0, 0);
+  requestAnimationFrame(render);
+}
+
+/* демо-активність: індекси відсортовані по групах, тож суцільні
+   діапазони ≈ одна функціональна група — спалахи виглядають "осмислено" */
+const chip = document.getElementById('spikeChip');
+function demoTick(){
+  let fired = 0;
+  for(let i = 0; i < N; i++) if(act[i] > 0.02) act[i] *= 0.8; else act[i] = 0;
+  const bursts = 3 + (Math.random() * 4 | 0);
+  for(let b = 0; b < bursts; b++){
+    const start = Math.random() * N | 0, len = 200 + Math.random() * 900 | 0;
+    for(let i = start; i < Math.min(N, start + len); i++) if(Math.random() < 0.45){ act[i] = 1; fired++; }
+  }
+  chip.textContent = fired.toLocaleString('uk-UA') + ' спайків / тік';
+}
+loadPositions().catch(err => {
+  document.getElementById('brainLoading').textContent = 'потрібен HTTP-сервер (' + err.message + ')';
+});
+
+/* ── Демо-телеметрія ── */
+const vals = { hunger: 22, thirst: 18, stamina: 86, dust: 8, dopamine: 12, stress: 9, fear: 38, curiosity: 58 };
+function renderMeters(){
+  document.querySelectorAll('.meter').forEach(m => {
+    const v = Math.round(vals[m.dataset.k]);
+    m.querySelector('.n').textContent = v + '%';
+    m.querySelector('.fill').style.width = v + '%';
+    const bad = m.hasAttribute('data-invert') ? v < 25 : v > 70;
+    m.classList.toggle('hot', !m.hasAttribute('data-nohot') && bad);
+  });
+  const alarm = vals.fear > 70 || vals.stress > 70 || vals.hunger > 85;
+  const pill = document.getElementById('statePill');
+  pill.textContent = alarm ? 'Тривога' : 'Стабільна';
+  pill.style.color = alarm ? 'var(--danger)' : 'var(--ok)';
+}
+setInterval(() => {
+  for(const k in vals) vals[k] = Math.max(0, Math.min(100, vals[k] + (Math.random() - 0.5) * 4));
+  vals.fear *= 0.97; vals.stress *= 0.97;
+  renderMeters();
+}, 1200);
+renderMeters();
+
+/* ── Кнопки (у макеті — лише візуальний відгук) ── */
+const stage = document.getElementById('stage');
+const title = document.getElementById('stateTitle');
+const thought = document.getElementById('thought');
+const react = {
+  shake: ['Злякалась!', 'що це було?!', () => { vals.fear = 92; vals.stress = 75; }],
+  clean: ['Гуляє столом', 'чисто. нудно.', () => {}],
+  food:  ['Йде до їжі', 'яблуко! там, праворуч', () => { vals.curiosity = 80; vals.dopamine = 55; }],
+};
+document.querySelectorAll('.act').forEach(btn => btn.addEventListener('click', () => {
+  const a = btn.dataset.act;
+  if(a === 'night'){
+    const on = stage.classList.toggle('is-night');
+    btn.setAttribute('aria-pressed', on);
+    title.textContent = on ? 'Спить' : 'Гуляє столом';
+    thought.textContent = on ? 'zzz…' : 'тут щось солодко пахне…';
+    return;
+  }
+  btn.classList.add('pulse'); setTimeout(() => btn.classList.remove('pulse'), 160);
+  const [t, th, fx] = react[a]; title.textContent = t; thought.textContent = th; fx(); renderMeters();
+}));
+document.querySelectorAll('.tool').forEach(btn => btn.addEventListener('click', () => {
+  btn.setAttribute('aria-pressed', btn.getAttribute('aria-pressed') !== 'true');
+}));
+</script>
+</body>
+</html>

@@ -196,6 +196,7 @@
 			break;
 
 		case 'stats':
+			BRAIN.workerStats = e.data;
 			/* Display performance info in the connectome subtitle */
 			var statsSubtitle = document.getElementById('connectomeSubtitle');
 			if (statsSubtitle && !statsSubtitle.classList.contains('loading')) {
