@@ -52,7 +52,14 @@
 		});
 	}
 
+	// Load phase for the start-up loader in the page:
+	// download → parse → ready, or fallback if the connectome didn't load.
+	function setLoadState(phase, loaded, total) {
+		BRAIN.loadState = {phase: phase, loaded: loaded || 0, total: total || 0};
+	}
+
 	function updateLoadingProgress(loaded, total) {
+		setLoadState('download', loaded, total);
 		var subtitle = document.getElementById('connectomeSubtitle');
 		if (!subtitle) return;
 		var loadedMB = (loaded / (1024 * 1024)).toFixed(1);
@@ -92,6 +99,7 @@
 		var metaUrl = 'data/neuron_meta.json';
 		var binUrl = 'data/connectome.bin.gz';
 		var subtitle = document.getElementById('connectomeSubtitle');
+		setLoadState('download', 0, 0);
 		if (subtitle) {
 			subtitle.textContent = 'Loading connectome...';
 			subtitle.classList.add('loading');
@@ -113,6 +121,7 @@
 				return fetchBinaryWithProgress(binUrl, updateLoadingProgress);
 			})
 			.then(function (buffer) {
+				setLoadState('parse');
 				if (subtitle) {
 					subtitle.textContent = 'Parsing connectome...';
 				}
@@ -124,6 +133,7 @@
 			.catch(function (err) {
 				console.warn('connectome.bin.gz load failed, using 59-group BRAIN.update():', err);
 				BRAIN.update = legacyUpdate;
+				setLoadState('fallback');
 				if (subtitle) {
 					subtitle.textContent = '59 neuron groups \u2014 FlyWire approximation (fallback)';
 					subtitle.classList.remove('loading');
@@ -146,6 +156,7 @@
 			buildGroupIndices();
 			workerReady = true;
 			BRAIN.workerReady = true;
+			setLoadState('ready');
 			BRAIN.workerNeuronCount = neuronCount;
 			BRAIN.workerRegionType = regionTypeArr;
 			BRAIN.workerGroupIdArr = groupIdArr;
@@ -210,6 +221,7 @@
 
 		case 'error':
 			console.warn('Worker error: ' + e.data.message);
+			if (!workerReady) setLoadState('fallback');
 			if (workerReady) {
 				console.warn('Falling back to 59-group BRAIN.update()');
 				workerReady = false;
@@ -225,6 +237,7 @@
 		workerReady = false;
 		BRAIN.workerReady = false;
 		BRAIN.update = legacyUpdate;
+		setLoadState('fallback');
 		var subtitle = document.getElementById('connectomeSubtitle');
 		if (subtitle) {
 			subtitle.textContent = '59 neuron groups \u2014 FlyWire approximation (fallback)';
